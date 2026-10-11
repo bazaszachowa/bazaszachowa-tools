@@ -74,7 +74,7 @@ private:
 
 template <std::size_t N> class BoundResult {
 public:
-  static constexpr std::size_t BUFFER_SIZE = 1024;
+  static constexpr std::size_t BUFFER_SIZE = 4096;
 
   BoundResult() {
     for (std::size_t i = 0; i < N; ++i) {

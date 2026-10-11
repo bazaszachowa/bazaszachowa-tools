@@ -77,6 +77,8 @@ void processBatch(mysql::Connection &conn, const string &table,
       }
     }
 
+    select_stmt.freeResult();
+
     if (updates.empty()) {
       return;
     }
