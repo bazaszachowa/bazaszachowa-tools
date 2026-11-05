@@ -106,7 +106,7 @@ if __name__ == "__main__":
                                     f"^{current_player}", rows[i + 2][1], re.IGNORECASE
                                 )
                                 and (
-                                    re.search("\d+$", rows[i][1], re.IGNORECASE)
+                                    re.search(r"\d+$", rows[i][1], re.IGNORECASE)
                                     or "," in next_player
                                 )
                             ):
