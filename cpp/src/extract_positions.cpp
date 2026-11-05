@@ -223,7 +223,8 @@ int main(int argc, const char *argv[]) {
   }
 
   if (!allowed_tables.contains(table)) {
-    throw invalid_argument("Invalid table name");
+    cout << "Invalid table name: " << table << '\n';
+    return 1;
   }
 
   cout << "Using table: " << table << '\n';
@@ -272,7 +273,6 @@ int main(int argc, const char *argv[]) {
     }
 
     cout << "All games processed.\n";
-
   } catch (const exception &e) {
     cerr << "MySQL error: " << e.what() << '\n';
 

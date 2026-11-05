@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <format>
 #include <fstream>
 #include <iostream>
@@ -13,17 +14,9 @@ using namespace chess;
 using namespace std;
 
 bool validateDate(string_view date) {
-  if (date.size() < 4) {
-    return false;
-  }
-
-  for (size_t i = 0; i < 4; ++i) {
-    if (!isdigit(date[i])) {
-      return false;
-    }
-  }
-
-  return true;
+  return date.size() >= 4 &&
+         std::all_of(date.begin(), date.begin() + 4,
+                     [](unsigned char c) { return std::isdigit(c); });
 }
 
 class MyVisitor : public pgn::Visitor {
@@ -69,7 +62,7 @@ public:
     }
   }
 
-  void startMoves() {
+  void startMoves() override {
     // Intentionally left empty: No action required at the start of moves.
   }
 
