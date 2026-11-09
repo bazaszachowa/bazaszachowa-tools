@@ -2,6 +2,7 @@ import html
 import os
 import re
 import tempfile
+import time
 import traceback
 import zipfile
 from collections.abc import Mapping
@@ -183,6 +184,7 @@ def pzszach_extract_pgns(tour_id: int | str) -> str:
 
 
 def chessmanager_scrap_pgns(link: str) -> str:
+    time.sleep(2)
     res = session.get(
         link,
         timeout=20,
