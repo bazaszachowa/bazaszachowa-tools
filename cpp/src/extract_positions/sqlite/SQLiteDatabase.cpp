@@ -1,10 +1,58 @@
 
+
 #include "SQLiteDatabase.hpp"
 
+#include <array>
+#include <cstdint>
+#include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace chessdb {
+
+namespace {
+
+class Statement {
+public:
+  Statement(sqlite3 *db, const char *sql) {
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt_, nullptr) != SQLITE_OK) {
+      throw std::runtime_error(sqlite3_errmsg(db));
+    }
+  }
+
+  ~Statement() { sqlite3_finalize(stmt_); }
+
+  Statement(const Statement &) = delete;
+  Statement &operator=(const Statement &) = delete;
+
+  sqlite3_stmt *get() const { return stmt_; }
+
+  void reset() {
+    sqlite3_reset(stmt_);
+    sqlite3_clear_bindings(stmt_);
+  }
+
+private:
+  sqlite3_stmt *stmt_ = nullptr;
+};
+
+void checkSQLite(int result, sqlite3 *db) {
+  if (result != SQLITE_OK && result != SQLITE_DONE) {
+    throw std::runtime_error(sqlite3_errmsg(db));
+  }
+}
+
+void appendUint32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
+  // Little-endian encoding.
+  bytes.push_back(static_cast<std::uint8_t>(value));
+  bytes.push_back(static_cast<std::uint8_t>(value >> 8));
+  bytes.push_back(static_cast<std::uint8_t>(value >> 16));
+  bytes.push_back(static_cast<std::uint8_t>(value >> 24));
+}
+
+} // namespace
 
 SQLiteDatabase::SQLiteDatabase(const std::string &filename, bool readOnly) {
   const int flags = readOnly ? SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
@@ -222,6 +270,157 @@ bool SQLiteDatabase::containsGame(GamesTable table, MysqlGameId gameId) {
   }
 
   throw std::runtime_error(sqlite3_errmsg(db_));
+}
+
+void SQLiteDatabase::insertBatch(const std::vector<ProcessedGame> &games) {
+  execute("BEGIN IMMEDIATE TRANSACTION");
+
+  try {
+    Statement findGame(db_, "SELECT id FROM games "
+                            "WHERE games_table = ? AND mysql_game_id = ?");
+
+    Statement insertGame(db_, "INSERT INTO games "
+                              "(games_table, mysql_game_id, moves_blob) "
+                              "VALUES (?, ?, ?)");
+
+    Statement findPosition(db_, "SELECT reverse_index FROM positions "
+                                "WHERE zobrist = ? AND games_table = ?");
+
+    Statement insertPosition(db_, "INSERT INTO positions "
+                                  "(zobrist, games_table, reverse_index) "
+                                  "VALUES (?, ?, ?)");
+
+    Statement updatePosition(db_, "UPDATE positions SET reverse_index = ? "
+                                  "WHERE zobrist = ? AND games_table = ?");
+
+    for (const auto &processed : games) {
+      const Game &game = processed.game;
+
+      const int table = static_cast<int>(game.gamesTable);
+
+      // Skip games already imported.
+      sqlite3_bind_int(findGame.get(), 1, table);
+      sqlite3_bind_int64(findGame.get(), 2,
+                         static_cast<sqlite3_int64>(game.mysqlId));
+
+      int rc = sqlite3_step(findGame.get());
+
+      if (rc == SQLITE_ROW) {
+        findGame.reset();
+        continue;
+      }
+
+      if (rc != SQLITE_DONE) {
+        checkSQLite(rc, db_);
+      }
+
+      findGame.reset();
+
+      // Insert game.
+      sqlite3_bind_int(insertGame.get(), 1, table);
+      sqlite3_bind_int64(insertGame.get(), 2,
+                         static_cast<sqlite3_int64>(game.mysqlId));
+
+      sqlite3_bind_blob(insertGame.get(), 3,
+                        game.moves.empty() ? nullptr : game.moves.data(),
+                        static_cast<int>(game.moves.size()), SQLITE_TRANSIENT);
+
+      checkSQLite(sqlite3_step(insertGame.get()), db_);
+
+      const auto sqliteGameId =
+          static_cast<std::uint32_t>(sqlite3_last_insert_rowid(db_));
+
+      insertGame.reset();
+
+      // Insert/update each position.
+      for (const PositionHash hash : processed.positions) {
+        sqlite3_bind_int64(findPosition.get(), 1,
+                           static_cast<sqlite3_int64>(hash));
+        sqlite3_bind_int(findPosition.get(), 2, table);
+
+        rc = sqlite3_step(findPosition.get());
+
+        std::vector<std::uint8_t> reverseIndex;
+
+        if (rc == SQLITE_ROW) {
+          const auto *data = static_cast<const std::uint8_t *>(
+              sqlite3_column_blob(findPosition.get(), 0));
+
+          const int size = sqlite3_column_bytes(findPosition.get(), 0);
+
+          if (size < 0 || size % 4 != 0) {
+            throw std::runtime_error("Invalid position reverse_index");
+          }
+
+          if (size > 0) {
+            reverseIndex.assign(data, data + size);
+          }
+
+          findPosition.reset();
+
+          // Avoid duplicate game IDs.
+          bool exists = false;
+
+          for (std::size_t i = 0; i < reverseIndex.size(); i += 4) {
+            const std::uint32_t id =
+                static_cast<std::uint32_t>(reverseIndex[i]) |
+                (static_cast<std::uint32_t>(reverseIndex[i + 1]) << 8) |
+                (static_cast<std::uint32_t>(reverseIndex[i + 2]) << 16) |
+                (static_cast<std::uint32_t>(reverseIndex[i + 3]) << 24);
+
+            if (id == sqliteGameId) {
+              exists = true;
+              break;
+            }
+          }
+
+          if (exists) {
+            continue;
+          }
+
+          appendUint32(reverseIndex, sqliteGameId);
+
+          sqlite3_bind_blob(updatePosition.get(), 1, reverseIndex.data(),
+                            static_cast<int>(reverseIndex.size()),
+                            SQLITE_TRANSIENT);
+          sqlite3_bind_int64(updatePosition.get(), 2,
+                             static_cast<sqlite3_int64>(hash));
+          sqlite3_bind_int(updatePosition.get(), 3, table);
+
+          checkSQLite(sqlite3_step(updatePosition.get()), db_);
+          updatePosition.reset();
+
+        } else if (rc == SQLITE_DONE) {
+          findPosition.reset();
+
+          appendUint32(reverseIndex, sqliteGameId);
+
+          sqlite3_bind_int64(insertPosition.get(), 1,
+                             static_cast<sqlite3_int64>(hash));
+          sqlite3_bind_int(insertPosition.get(), 2, table);
+          sqlite3_bind_blob(insertPosition.get(), 3, reverseIndex.data(),
+                            static_cast<int>(reverseIndex.size()),
+                            SQLITE_TRANSIENT);
+
+          checkSQLite(sqlite3_step(insertPosition.get()), db_);
+          insertPosition.reset();
+
+        } else {
+          checkSQLite(rc, db_);
+        }
+      }
+    }
+
+    execute("COMMIT");
+
+  } catch (...) {
+    try {
+      execute("ROLLBACK");
+    } catch (...) {
+      // Preserve the original exception.
+    }
+    throw;
+  }
 }
 
 } // namespace chessdb

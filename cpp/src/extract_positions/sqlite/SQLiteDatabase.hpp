@@ -21,6 +21,8 @@ public:
 
   sqlite3 *handle() const noexcept { return db_; }
 
+  void insertBatch(const std::vector<ProcessedGame> &games);
+
 private:
   sqlite3 *db_ = nullptr;
 
