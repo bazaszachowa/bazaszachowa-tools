@@ -66,12 +66,20 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+find_package(SQLite3 REQUIRED)
+
 add_executable(pgn2sql ${SOURCE_DIR}/pgn2sql.cpp)
 add_executable(lichess_classify ${SOURCE_DIR}/lichess_classify.cpp)
 add_executable(remote2pgn ${SOURCE_DIR}/remote2pgn.cpp)
 add_executable(prepare_pgn ${SOURCE_DIR}/prepare_pgn.cpp)
-add_executable(extract_positions ${SOURCE_DIR}/extract_positions.cpp)
+add_executable(extract_positions ${SOURCE_DIR}/extract_positions/main.cpp)
 
 target_link_libraries(lichess_classify PRIVATE ${MYSQL_LIB} pthread)
 target_link_libraries(remote2pgn PRIVATE ${MYSQL_LIB} pthread)
-target_link_libraries(extract_positions PRIVATE ${MYSQL_LIB} pthread)
+# target_link_libraries(extract_positions PRIVATE ${MYSQL_LIB} pthread)
+target_link_libraries(extract_positions PRIVATE SQLite::SQLite3)
+
+target_sources(extract_positions PRIVATE
+    ${SOURCE_DIR}/extract_positions/main.cpp
+    ${SOURCE_DIR}/extract_positions/sqlite/SQLiteDatabase.cpp
+)
