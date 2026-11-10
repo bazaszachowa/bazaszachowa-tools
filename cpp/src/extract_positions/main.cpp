@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "./pipeline/BlockingQueue.hpp"
 #include "mysql/MySQLGameReader.hpp"
 #include "types/Types.hpp"
 
@@ -42,6 +43,30 @@ void fetchGames(const string &table, unsigned int workerId, uint64_t offset,
 
   cout << "Worker " << workerId << " finished. Fetched " << fetched
        << " games.\n";
+}
+
+#include "processing/GameProcessor.hpp"
+
+void processGames(unsigned int workerId,
+                  BlockingQueue<std::vector<Game>> &input,
+                  BlockingQueue<std::vector<ProcessedGame>> &output) {
+  uint64_t processedCount = 0;
+
+  while (auto batch = input.pop()) {
+    std::vector<ProcessedGame> processedBatch;
+    processedBatch.reserve(batch->size());
+
+    for (auto &game : *batch) {
+      processedBatch.push_back(processGame(std::move(game)));
+    }
+
+    processedCount += processedBatch.size();
+
+    output.push(std::move(processedBatch));
+  }
+
+  std::cout << "Processor " << workerId << " finished. Processed "
+            << processedCount << " games.\n";
 }
 
 int main(int argc, const char *argv[]) {

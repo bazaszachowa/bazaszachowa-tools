@@ -83,4 +83,5 @@ target_sources(extract_positions PRIVATE
     ${SOURCE_DIR}/extract_positions/main.cpp
     ${SOURCE_DIR}/extract_positions/sqlite/SQLiteDatabase.cpp
     ${SOURCE_DIR}/extract_positions/mysql/MySQLGameReader.cpp
+    ${SOURCE_DIR}/extract_positions/processing/GameProcessor.cpp
 )
