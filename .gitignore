@@ -2,3 +2,4 @@
 .vscode/
 python/repeatable_tasks/pgns/
 python/repeatable_tasks/downloaded_zips/
+chess.sqlite
