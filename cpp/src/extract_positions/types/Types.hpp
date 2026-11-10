@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace chessdb {
@@ -21,8 +22,10 @@ enum class GameResult : std::uint8_t {
 using DateCode = std::uint16_t;
 
 constexpr DateCode UNKNOWN_DATE = 378;
+constexpr std::uint32_t GAME_BATCH_SIZE = 1000;
 
 struct Game {
+  std::string sourceTable;
   MysqlGameId mysqlId{};
   std::uint16_t year{};
   DateCode dateCode{UNKNOWN_DATE};

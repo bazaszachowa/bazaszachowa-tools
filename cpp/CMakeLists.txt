@@ -77,9 +77,10 @@ add_executable(extract_positions ${SOURCE_DIR}/extract_positions/main.cpp)
 target_link_libraries(lichess_classify PRIVATE ${MYSQL_LIB} pthread)
 target_link_libraries(remote2pgn PRIVATE ${MYSQL_LIB} pthread)
 # target_link_libraries(extract_positions PRIVATE ${MYSQL_LIB} pthread)
-target_link_libraries(extract_positions PRIVATE SQLite::SQLite3)
+target_link_libraries(extract_positions PRIVATE ${MYSQL_LIB} SQLite::SQLite3)
 
 target_sources(extract_positions PRIVATE
     ${SOURCE_DIR}/extract_positions/main.cpp
     ${SOURCE_DIR}/extract_positions/sqlite/SQLiteDatabase.cpp
+    ${SOURCE_DIR}/extract_positions/mysql/MySQLGameReader.cpp
 )
