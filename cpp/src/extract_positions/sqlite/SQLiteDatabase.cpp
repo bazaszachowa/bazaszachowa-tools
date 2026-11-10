@@ -62,28 +62,9 @@ void SQLiteDatabase::initialize() {
   execute("PRAGMA journal_mode = WAL;");
   execute("PRAGMA synchronous = NORMAL;");
   execute("PRAGMA foreign_keys = ON;");
-
-  execute(R"(
-        CREATE TABLE IF NOT EXISTS games (
-            games_table TEXT NOT NULL,
-            mysql_game_id INTEGER NOT NULL,
-            moves_blob BLOB NOT NULL,
-
-            PRIMARY KEY (games_table, mysql_game_id)
-        );
-    )");
-
-  execute(R"(
-        CREATE TABLE IF NOT EXISTS positions (
-            zobrist INTEGER NOT NULL,
-            games_table TEXT NOT NULL,
-            reverse_index BLOB NOT NULL,
-
-            PRIMARY KEY (zobrist, games_table),
-
-            CHECK (length(reverse_index) % 4 = 0)
-        );
-    )");
+  execute("PRAGMA temp_store = MEMORY;");
+  execute("PRAGMA cache_size = -64000;");
+  execute("PRAGMA mmap_size = 268435456;");
 
   execute(R"(
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -92,16 +73,120 @@ void SQLiteDatabase::initialize() {
         );
     )");
 
-  execute(R"(
-        INSERT OR IGNORE INTO schema_migrations (version)
-        VALUES (1);
-    )");
+  sqlite3_stmt *stmt = nullptr;
 
-  execute("PRAGMA user_version = 1;");
+  int rc = sqlite3_prepare_v2(db_, "PRAGMA user_version;", -1, &stmt, nullptr);
+
+  if (rc != SQLITE_OK) {
+    throw std::runtime_error(sqlite3_errmsg(db_));
+  }
+
+  rc = sqlite3_step(stmt);
+
+  if (rc != SQLITE_ROW) {
+    sqlite3_finalize(stmt);
+    throw std::runtime_error("Could not read SQLite schema version");
+  }
+
+  const int version = sqlite3_column_int(stmt, 0);
+  sqlite3_finalize(stmt);
+
+  if (version > 2) {
+    throw std::runtime_error("SQLite database version is newer than supported");
+  }
+
+  // New database.
+  if (version == 0) {
+    execute(R"(
+            BEGIN;
+
+            CREATE TABLE games (
+                games_table INTEGER NOT NULL CHECK (games_table IN (0, 1)),
+                mysql_game_id INTEGER NOT NULL,
+                moves_blob BLOB NOT NULL,
+
+                PRIMARY KEY (games_table, mysql_game_id)
+            );
+
+            CREATE TABLE positions (
+                zobrist INTEGER NOT NULL,
+                games_table INTEGER NOT NULL CHECK (games_table IN (0, 1)),
+                reverse_index BLOB NOT NULL,
+
+                PRIMARY KEY (zobrist, games_table),
+
+                CHECK (length(reverse_index) % 4 = 0)
+            );
+
+            INSERT INTO schema_migrations (version) VALUES (2);
+
+            PRAGMA user_version = 2;
+
+            COMMIT;
+        )");
+  }
+
+  // Migration from version 1: TEXT table names -> INTEGER IDs.
+  else if (version == 1) {
+    execute(R"(
+            BEGIN;
+
+            CREATE TABLE games_v2 (
+                games_table INTEGER NOT NULL CHECK (games_table IN (0, 1)),
+                mysql_game_id INTEGER NOT NULL,
+                moves_blob BLOB NOT NULL,
+
+                PRIMARY KEY (games_table, mysql_game_id)
+            );
+
+            INSERT INTO games_v2 (games_table, mysql_game_id, moves_blob)
+            SELECT
+                CASE games_table
+                    WHEN 'all_games' THEN 0
+                    WHEN 'poland_games' THEN 1
+                END,
+                mysql_game_id,
+                moves_blob
+            FROM games;
+
+            CREATE TABLE positions_v2 (
+                zobrist INTEGER NOT NULL,
+                games_table INTEGER NOT NULL CHECK (games_table IN (0, 1)),
+                reverse_index BLOB NOT NULL,
+
+                PRIMARY KEY (zobrist, games_table),
+
+                CHECK (length(reverse_index) % 4 = 0)
+            );
+
+            INSERT INTO positions_v2 (zobrist, games_table, reverse_index)
+            SELECT
+                zobrist,
+                CASE games_table
+                    WHEN 'all_games' THEN 0
+                    WHEN 'poland_games' THEN 1
+                END,
+                reverse_index
+            FROM positions;
+
+            DROP TABLE games;
+            DROP TABLE positions;
+
+            ALTER TABLE games_v2 RENAME TO games;
+            ALTER TABLE positions_v2 RENAME TO positions;
+
+            INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);
+
+            PRAGMA user_version = 2;
+
+            COMMIT;
+        )");
+  }
+
+  execute("PRAGMA optimize;");
 }
 
-bool SQLiteDatabase::containsGame(const std::string &sourceTable,
-                                  std::uint32_t gameId) {
+bool SQLiteDatabase::containsGame(GamesTable table, MysqlGameId gameId) {
   constexpr const char *sql = R"(
         SELECT 1
         FROM games
@@ -115,8 +200,7 @@ bool SQLiteDatabase::containsGame(const std::string &sourceTable,
   int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
 
   if (rc != SQLITE_OK) {
-    throw std::runtime_error("SQLite prepare failed: " +
-                             std::string(sqlite3_errmsg(db_)));
+    throw std::runtime_error(sqlite3_errmsg(db_));
   }
 
   struct StatementGuard {
@@ -124,19 +208,8 @@ bool SQLiteDatabase::containsGame(const std::string &sourceTable,
     ~StatementGuard() { sqlite3_finalize(stmt); }
   } guard{stmt};
 
-  rc =
-      sqlite3_bind_text(stmt, 1, sourceTable.c_str(),
-                        static_cast<int>(sourceTable.size()), SQLITE_TRANSIENT);
-
-  if (rc != SQLITE_OK) {
-    throw std::runtime_error("SQLite bind failed");
-  }
-
-  rc = sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(gameId));
-
-  if (rc != SQLITE_OK) {
-    throw std::runtime_error("SQLite bind failed");
-  }
+  sqlite3_bind_int(stmt, 1, static_cast<int>(table));
+  sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(gameId));
 
   rc = sqlite3_step(stmt);
 
@@ -148,8 +221,7 @@ bool SQLiteDatabase::containsGame(const std::string &sourceTable,
     return false;
   }
 
-  throw std::runtime_error("SQLite query failed: " +
-                           std::string(sqlite3_errmsg(db_)));
+  throw std::runtime_error(sqlite3_errmsg(db_));
 }
 
 } // namespace chessdb
