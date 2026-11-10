@@ -1,11 +1,7 @@
 
-
 #include "SQLiteDatabase.hpp"
 
-#include <array>
 #include <cstdint>
-#include <cstring>
-#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -152,7 +148,6 @@ void SQLiteDatabase::initialize() {
                 games_table INTEGER NOT NULL CHECK (games_table IN (0, 1)),
                 mysql_game_id INTEGER NOT NULL,
                 moves_blob BLOB NOT NULL,
-
                 PRIMARY KEY (games_table, mysql_game_id)
             );
 
@@ -160,9 +155,7 @@ void SQLiteDatabase::initialize() {
                 zobrist INTEGER NOT NULL,
                 games_table INTEGER NOT NULL CHECK (games_table IN (0, 1)),
                 reverse_index BLOB NOT NULL,
-
                 PRIMARY KEY (zobrist, games_table),
-
                 CHECK (length(reverse_index) % 4 = 0)
             );
 
@@ -183,7 +176,6 @@ void SQLiteDatabase::initialize() {
                 games_table INTEGER NOT NULL CHECK (games_table IN (0, 1)),
                 mysql_game_id INTEGER NOT NULL,
                 moves_blob BLOB NOT NULL,
-
                 PRIMARY KEY (games_table, mysql_game_id)
             );
 
@@ -201,9 +193,7 @@ void SQLiteDatabase::initialize() {
                 zobrist INTEGER NOT NULL,
                 games_table INTEGER NOT NULL CHECK (games_table IN (0, 1)),
                 reverse_index BLOB NOT NULL,
-
                 PRIMARY KEY (zobrist, games_table),
-
                 CHECK (length(reverse_index) % 4 = 0)
             );
 
@@ -276,7 +266,8 @@ void SQLiteDatabase::insertBatch(const std::vector<ProcessedGame> &games) {
   execute("BEGIN IMMEDIATE TRANSACTION");
 
   try {
-    Statement findGame(db_, "SELECT id FROM games "
+    // FIX: games has no explicit "id" column.
+    Statement findGame(db_, "SELECT 1 FROM games "
                             "WHERE games_table = ? AND mysql_game_id = ?");
 
     Statement insertGame(db_, "INSERT INTO games "
@@ -295,7 +286,6 @@ void SQLiteDatabase::insertBatch(const std::vector<ProcessedGame> &games) {
 
     for (const auto &processed : games) {
       const Game &game = processed.game;
-
       const int table = static_cast<int>(game.gamesTable);
 
       // Skip games already imported.
@@ -327,6 +317,7 @@ void SQLiteDatabase::insertBatch(const std::vector<ProcessedGame> &games) {
 
       checkSQLite(sqlite3_step(insertGame.get()), db_);
 
+      // Use SQLite's implicit rowid for the reverse index.
       const auto sqliteGameId =
           static_cast<std::uint32_t>(sqlite3_last_insert_rowid(db_));
 
@@ -336,6 +327,7 @@ void SQLiteDatabase::insertBatch(const std::vector<ProcessedGame> &games) {
       for (const PositionHash hash : processed.positions) {
         sqlite3_bind_int64(findPosition.get(), 1,
                            static_cast<sqlite3_int64>(hash));
+
         sqlite3_bind_int(findPosition.get(), 2, table);
 
         rc = sqlite3_step(findPosition.get());
@@ -383,8 +375,10 @@ void SQLiteDatabase::insertBatch(const std::vector<ProcessedGame> &games) {
           sqlite3_bind_blob(updatePosition.get(), 1, reverseIndex.data(),
                             static_cast<int>(reverseIndex.size()),
                             SQLITE_TRANSIENT);
+
           sqlite3_bind_int64(updatePosition.get(), 2,
                              static_cast<sqlite3_int64>(hash));
+
           sqlite3_bind_int(updatePosition.get(), 3, table);
 
           checkSQLite(sqlite3_step(updatePosition.get()), db_);
@@ -397,7 +391,9 @@ void SQLiteDatabase::insertBatch(const std::vector<ProcessedGame> &games) {
 
           sqlite3_bind_int64(insertPosition.get(), 1,
                              static_cast<sqlite3_int64>(hash));
+
           sqlite3_bind_int(insertPosition.get(), 2, table);
+
           sqlite3_bind_blob(insertPosition.get(), 3, reverseIndex.data(),
                             static_cast<int>(reverseIndex.size()),
                             SQLITE_TRANSIENT);
@@ -419,6 +415,7 @@ void SQLiteDatabase::insertBatch(const std::vector<ProcessedGame> &games) {
     } catch (...) {
       // Preserve the original exception.
     }
+
     throw;
   }
 }
