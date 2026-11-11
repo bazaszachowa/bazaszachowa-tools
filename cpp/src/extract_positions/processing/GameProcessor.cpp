@@ -5,7 +5,7 @@
 #include <array>
 #include <string>
 #include <string_view>
-#include <unordered_set>
+#include <vector>
 
 #include <chess-library/include/chess.hpp>
 
@@ -65,7 +65,12 @@ ProcessedGame processGame(const Game &game) {
     const chess::Move move = chess::uci::uciToMove(board, uci);
     board.makeMove(move);
 
-    processed.positions.insert(board.zobrist());
+    const PositionHash hash = board.zobrist();
+
+    if (std::find(processed.positions.begin(), processed.positions.end(),
+                  hash) == processed.positions.end()) {
+      processed.positions.push_back(hash);
+    }
   }
 
   return processed;

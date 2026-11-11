@@ -2,7 +2,6 @@
 #pragma once
 
 #include <cstdint>
-#include <unordered_set>
 #include <vector>
 
 namespace chessdb {
@@ -22,7 +21,7 @@ enum class GameResult : std::uint8_t {
 using DateCode = std::uint16_t;
 
 constexpr DateCode UNKNOWN_DATE = 378;
-constexpr std::uint32_t GAME_BATCH_SIZE = 1000;
+constexpr std::uint32_t GAME_BATCH_SIZE = 250;
 
 struct Game {
   MysqlGameId mysqlId{};
@@ -44,7 +43,7 @@ struct ProcessedGame {
   PlayerId blackId{};
   GameResult result{GameResult::Unknown};
 
-  std::unordered_set<PositionHash> positions;
+  std::vector<PositionHash> positions;
 };
 
 } // namespace chessdb

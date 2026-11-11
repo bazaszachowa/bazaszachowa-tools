@@ -1,9 +1,11 @@
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <exception>
 #include <future>
 #include <iostream>
+#include <semaphore>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -29,16 +31,17 @@ using ProcessedQueue =
 const unsigned int detectedThreads = thread::hardware_concurrency();
 const unsigned int N_THREADS = max(2u, detectedThreads) - 1;
 
+constexpr std::ptrdiff_t MAX_QUEUED_BATCHES = 4;
+
+using BatchSemaphore = std::counting_semaphore<MAX_QUEUED_BATCHES>;
+
 void fetchGames(const string &table, unsigned int workerId,
                 const vector<MysqlGameId> &missingIds, size_t begin, size_t end,
-                GameQueue &output, atomic<unsigned int> &activeProducers) {
+                GameQueue &output, BatchSemaphore &slots,
+                atomic<unsigned int> &activeProducers) {
   CompletionGuard completion(activeProducers);
 
   MySQLGameReader reader(table);
-
-  uint64_t fetched = 0;
-  uint64_t enqueued = 0;
-  uint64_t batches = 0;
 
   for (size_t offset = begin; offset < end; offset += GAME_BATCH_SIZE) {
     const size_t count = min<size_t>(GAME_BATCH_SIZE, end - offset);
@@ -54,97 +57,79 @@ void fetchGames(const string &table, unsigned int workerId,
                           " games, fetched " + to_string(games.size()));
     }
 
-    const size_t batchSize = games.size();
+    slots.acquire();
 
     if (!output.enqueue(std::move(games))) {
+      slots.release();
       throw runtime_error("Could not enqueue MySQL batch");
     }
-
-    fetched += batchSize;
-    enqueued += batchSize;
-    ++batches;
   }
 
-  cout << "MySQL worker " << workerId << " finished: fetched=" << fetched
-       << ", enqueued=" << enqueued << ", batches=" << batches << '\n';
+  cout << "MySQL worker " << workerId << " finished\n";
 }
 
 void processGames(unsigned int workerId, GameQueue &input,
-                  ProcessedQueue &output, atomic<unsigned int> &activeProducers,
+                  ProcessedQueue &output, BatchSemaphore &gameSlots,
+                  BatchSemaphore &processedSlots,
+                  atomic<unsigned int> &activeProducers,
                   atomic<unsigned int> &activeProcessors) {
   CompletionGuard completion(activeProcessors);
-
-  uint64_t processedCount = 0;
-  uint64_t batchesReceived = 0;
-  uint64_t batchesEnqueued = 0;
 
   while (true) {
     vector<Game> batch;
 
     if (input.try_dequeue(batch)) {
+      gameSlots.release();
+
       vector<ProcessedGame> processedBatch;
       processedBatch.reserve(batch.size());
 
       transform(batch.begin(), batch.end(), back_inserter(processedBatch),
                 processGame);
 
-      if (processedBatch.size() != batch.size()) {
-        throw runtime_error("Processor produced an incorrect batch size");
-      }
-
-      processedCount += processedBatch.size();
-      ++batchesReceived;
+      processedSlots.acquire();
 
       if (!output.enqueue(std::move(processedBatch))) {
+        processedSlots.release();
         throw runtime_error("Could not enqueue processed batch");
       }
 
-      ++batchesEnqueued;
       continue;
     }
 
-    if (activeProducers.load(std::memory_order_acquire) == 0) {
+    if (activeProducers.load(memory_order_acquire) == 0) {
       break;
     }
 
     this_thread::yield();
   }
 
-  cout << "Processor " << workerId
-       << " finished: received batches=" << batchesReceived
-       << ", enqueued batches=" << batchesEnqueued
-       << ", processed games=" << processedCount << '\n';
+  cout << "Processor " << workerId << " finished\n";
 }
 
 void writeGames(const string &databasePath, ProcessedQueue &input,
+                BatchSemaphore &processedSlots,
                 atomic<unsigned int> &activeProcessors) {
   SQLiteDatabase database(databasePath);
-
-  uint64_t insertedBatches = 0;
-  uint64_t processedGames = 0;
 
   while (true) {
     vector<ProcessedGame> batch;
 
     if (input.try_dequeue(batch)) {
-      processedGames += batch.size();
+      processedSlots.release();
 
       database.insertBatch(batch);
-      ++insertedBatches;
-
-      cout << "SQLite writer committed batch " << insertedBatches << '\n';
       continue;
     }
 
-    if (activeProcessors.load(std::memory_order_acquire) == 0) {
+    if (activeProcessors.load(memory_order_acquire) == 0) {
       break;
     }
 
     this_thread::yield();
   }
 
-  cout << "SQLite writer finished: games=" << processedGames
-       << ", batches=" << insertedBatches << '\n';
+  cout << "SQLite writer finished\n";
 }
 
 int main(int argc, const char *argv[]) {
@@ -160,6 +145,9 @@ int main(int argc, const char *argv[]) {
 
   GameQueue gameQueue;
   ProcessedQueue processedQueue;
+
+  BatchSemaphore gameSlots{MAX_QUEUED_BATCHES};
+  BatchSemaphore processedSlots{MAX_QUEUED_BATCHES};
 
   try {
     cout << "MySQL table: " << table << '\n';
@@ -209,10 +197,7 @@ int main(int argc, const char *argv[]) {
         }
       }
 
-      // Remove SQLite games that no longer exist in MySQL.
       database.removeGamesMissingFromMysql();
-
-      // Find games that need importing.
       missingIds = database.findMissingMysqlGames();
     }
 
@@ -224,7 +209,7 @@ int main(int argc, const char *argv[]) {
     }
 
     // -------------------------------------------------
-    // Start the pipeline.
+    // Configure pipeline workers.
     // -------------------------------------------------
 
     const size_t gamesPerThread =
@@ -236,17 +221,31 @@ int main(int argc, const char *argv[]) {
     atomic<unsigned int> activeProducers{producerCount};
     atomic<unsigned int> activeProcessors{processingThreads};
 
-    auto writer = async(launch::async, writeGames, databasePath,
-                        ref(processedQueue), ref(activeProcessors));
+    // -------------------------------------------------
+    // Start SQLite writer.
+    // -------------------------------------------------
+
+    auto writer =
+        async(launch::async, writeGames, databasePath, ref(processedQueue),
+              ref(processedSlots), ref(activeProcessors));
+
+    // -------------------------------------------------
+    // Start processing workers.
+    // -------------------------------------------------
 
     vector<future<void>> processors;
     processors.reserve(processingThreads);
 
     for (unsigned int i = 0; i < processingThreads; ++i) {
       processors.push_back(async(launch::async, processGames, i, ref(gameQueue),
-                                 ref(processedQueue), ref(activeProducers),
+                                 ref(processedQueue), ref(gameSlots),
+                                 ref(processedSlots), ref(activeProducers),
                                  ref(activeProcessors)));
     }
+
+    // -------------------------------------------------
+    // Start MySQL producers.
+    // -------------------------------------------------
 
     vector<future<void>> producers;
     producers.reserve(producerCount);
@@ -257,14 +256,14 @@ int main(int argc, const char *argv[]) {
 
       producers.push_back(async(launch::async, fetchGames, table, i,
                                 cref(missingIds), begin, end, ref(gameQueue),
-                                ref(activeProducers)));
+                                ref(gameSlots), ref(activeProducers)));
     }
-
-    exception_ptr firstError;
 
     // -------------------------------------------------
     // Wait for MySQL producers.
     // -------------------------------------------------
+
+    exception_ptr firstError;
 
     for (auto &producer : producers) {
       try {
@@ -278,8 +277,6 @@ int main(int argc, const char *argv[]) {
 
     // -------------------------------------------------
     // Wait for processors.
-    // They exit after all producers finish and the queue
-    // has been drained.
     // -------------------------------------------------
 
     for (auto &processor : processors) {
@@ -294,8 +291,6 @@ int main(int argc, const char *argv[]) {
 
     // -------------------------------------------------
     // Wait for SQLite writer.
-    // It exits after all processors finish and its queue
-    // has been drained.
     // -------------------------------------------------
 
     try {
