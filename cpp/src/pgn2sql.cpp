@@ -28,13 +28,13 @@ public:
 
   ~MyVisitor() = default;
 
-  void startPgn() {
+  void startPgn() override {
     board.setFen(constants::STARTPOS);
     movesStream.str("");
     movesStream.clear();
   }
 
-  void header(string_view key, string_view value) {
+  void header(string_view key, string_view value) override {
     if (key == "Event") {
       event = value;
     } else if (key == "Site") {
@@ -66,7 +66,7 @@ public:
     // Intentionally left empty: No action required at the start of moves.
   }
 
-  void move(string_view move, string_view comment) {
+  void move(string_view move, string_view comment) override {
     try {
       const Move m = uci::parseSan(board, move);
 
@@ -106,7 +106,7 @@ public:
     }
   }
 
-  void endPgn() {
+  void endPgn() override {
     outFile << format(
         "INSERT IGNORE INTO {} (moves_blob, Event, Site, Year, Month, Day, "
         "Round, White, Black, Result, WhiteElo, BlackElo) VALUES(",

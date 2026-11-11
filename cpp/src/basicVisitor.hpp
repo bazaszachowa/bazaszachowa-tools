@@ -26,9 +26,9 @@ class BasicVisitor : public pgn::Visitor {
 public:
   ~BasicVisitor() = default;
 
-  void startPgn() { board.setFen(constants::STARTPOS); }
+  void startPgn() override { board.setFen(constants::STARTPOS); }
 
-  void header(std::string_view key, std::string_view value) {
+  void header(std::string_view key, std::string_view value) override {
     if (key == "Event") {
       event = value;
     } else if (key == "Site") {
@@ -59,11 +59,11 @@ public:
     }
   }
 
-  void startMoves() {
+  void startMoves() override {
     // Intentionally left empty: No action required at the start of moves.
   }
 
-  void move(std::string_view move, std::string_view comment) {
+  void move(std::string_view move, std::string_view comment) override {
     // Intentionally left empty: No action required per move.
   }
 
