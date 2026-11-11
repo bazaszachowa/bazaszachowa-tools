@@ -3,8 +3,9 @@
 #include <sqlite3.h>
 
 #include "../types/Types.hpp"
-#include <cstdint>
+
 #include <string>
+#include <vector>
 
 namespace chessdb {
 
@@ -15,10 +16,6 @@ public:
 
   SQLiteDatabase(const SQLiteDatabase &) = delete;
   SQLiteDatabase &operator=(const SQLiteDatabase &) = delete;
-
-  bool containsGame(MysqlGameId gameId);
-
-  sqlite3 *handle() const noexcept { return db_; }
 
   void insertBatch(const std::vector<ProcessedGame> &games);
 

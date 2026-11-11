@@ -1,3 +1,4 @@
+
 #include "MySQLGameReader.hpp"
 
 #include "../../mysql_settings.hpp"
@@ -13,6 +14,83 @@ namespace {
 
 constexpr bool isAllowedTable(const std::string &table) {
   return table == "all_games" || table == "poland_games";
+}
+
+template <typename T>
+T parseInteger(const std::string &value, const char *field) {
+  try {
+    const unsigned long long parsed = std::stoull(value);
+
+    if (parsed > std::numeric_limits<T>::max()) {
+      throw std::runtime_error(std::string(field) +
+                               " exceeds its allowed range");
+    }
+
+    return static_cast<T>(parsed);
+  } catch (const std::invalid_argument &) {
+    throw std::runtime_error(std::string("Invalid MySQL value for ") + field);
+  } catch (const std::out_of_range &) {
+    throw std::runtime_error(std::string("MySQL value out of range for ") +
+                             field);
+  }
+}
+
+DateCode encodeDate(const std::string &month, const std::string &day) {
+  if (month.empty()) {
+    return UNKNOWN_DATE;
+  }
+
+  const unsigned int m = parseInteger<unsigned int>(month, "Month");
+
+  if (m < 1 || m > 12) {
+    return UNKNOWN_DATE;
+  }
+
+  // Month known, day NULL: 366–377.
+  if (day.empty()) {
+    return static_cast<DateCode>(365 + m);
+  }
+
+  const unsigned int d = parseInteger<unsigned int>(day, "Day");
+
+  constexpr unsigned int daysPerMonth[] = {31, 28, 31, 30, 31, 30,
+                                           31, 31, 30, 31, 30, 31};
+
+  if (d < 1 || d > daysPerMonth[m - 1] + (m == 2 ? 1 : 0)) {
+    return UNKNOWN_DATE;
+  }
+
+  // February 29 has its own reserved code.
+  if (m == 2 && d == 29) {
+    return 365;
+  }
+
+  unsigned int dayOfYear = d - 1;
+
+  for (unsigned int i = 1; i < m; ++i) {
+    dayOfYear += daysPerMonth[i - 1];
+  }
+
+  return static_cast<DateCode>(dayOfYear);
+}
+
+GameResult parseResult(const std::string &value) {
+  if (value.empty()) {
+    return GameResult::Unknown;
+  }
+
+  const unsigned int result = parseInteger<unsigned int>(value, "Result");
+
+  switch (result) {
+  case 0:
+    return GameResult::BlackWin;
+  case 1:
+    return GameResult::Draw;
+  case 2:
+    return GameResult::WhiteWin;
+  default:
+    return GameResult::Unknown;
+  }
 }
 
 } // namespace
@@ -41,7 +119,9 @@ std::uint64_t MySQLGameReader::countGames() {
 
 std::vector<Game> MySQLGameReader::fetchBatch(std::uint64_t offset,
                                               std::uint32_t limit) {
-  const std::string sql = "SELECT `id`, `moves_blob` "
+
+  const std::string sql = "SELECT `id`, `moves_blob`, `Year`, `Month`, `Day`, "
+                          "`WhiteID`, `BlackID`, `Result` "
                           "FROM `" +
                           sourceTable_ +
                           "` "
@@ -55,7 +135,7 @@ std::vector<Game> MySQLGameReader::fetchBatch(std::uint64_t offset,
 
   auto metadata = stmt.resultMetadata();
 
-  mysql::BoundResult<2> result;
+  mysql::BoundResult<8> result;
   stmt.bindResult(result.data());
 
   std::vector<Game> games;
@@ -64,16 +144,21 @@ std::vector<Game> MySQLGameReader::fetchBatch(std::uint64_t offset,
   while (stmt.fetch() == 0) {
     const std::string idString = result.get(0);
     const std::string movesString = result.get(1);
-
-    const auto parsedId = std::stoull(idString);
-
-    if (parsedId > std::numeric_limits<MysqlGameId>::max()) {
-      throw std::runtime_error("MySQL game ID exceeds uint32_t");
-    }
+    const std::string yearString = result.get(2);
+    const std::string monthString = result.get(3);
+    const std::string dayString = result.get(4);
+    const std::string whiteIdString = result.get(5);
+    const std::string blackIdString = result.get(6);
+    const std::string resultString = result.get(7);
 
     Game game;
-    game.mysqlId = static_cast<MysqlGameId>(parsedId);
 
+    game.mysqlId = parseInteger<MysqlGameId>(idString, "id");
+    game.year = parseInteger<std::uint16_t>(yearString, "Year");
+    game.dateCode = encodeDate(monthString, dayString);
+    game.whiteId = parseInteger<PlayerId>(whiteIdString, "WhiteID");
+    game.blackId = parseInteger<PlayerId>(blackIdString, "BlackID");
+    game.result = parseResult(resultString);
     game.moves.reserve(movesString.size());
 
     for (unsigned char byte : movesString) {

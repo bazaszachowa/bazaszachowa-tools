@@ -71,6 +71,9 @@ ProcessedGame processGame(Game game) {
     }
   }
 
+  processed.game.moves.clear();
+  processed.game.moves.shrink_to_fit();
+
   return processed;
 }
 
