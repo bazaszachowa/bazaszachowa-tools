@@ -1,16 +1,19 @@
 
 #include "SQLiteDatabase.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace chessdb {
 
 namespace {
 
-constexpr int SCHEMA_VERSION = 4;
+constexpr int SCHEMA_VERSION = 5;
 
 class Statement {
 public:
@@ -51,8 +54,39 @@ void checkSQLite(int rc, sqlite3 *db) {
   }
 }
 
-void createVersion4Schema(sqlite3 *db) {
-  const char *sql = R"(
+void executeSql(sqlite3 *db, const char *sql) {
+  char *error = nullptr;
+  const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &error);
+
+  if (rc != SQLITE_OK) {
+    const std::string message = error ? error : sqlite3_errmsg(db);
+    sqlite3_free(error);
+    throw std::runtime_error(message);
+  }
+}
+
+void appendGameId(std::vector<std::uint8_t> &blob, std::uint32_t gameId) {
+  blob.push_back(static_cast<std::uint8_t>(gameId));
+  blob.push_back(static_cast<std::uint8_t>(gameId >> 8));
+  blob.push_back(static_cast<std::uint8_t>(gameId >> 16));
+  blob.push_back(static_cast<std::uint8_t>(gameId >> 24));
+}
+
+void bindBlob(sqlite3_stmt *stmt, int index,
+              const std::vector<std::uint8_t> &blob, sqlite3 *db) {
+  if (blob.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+    throw std::runtime_error("game_ids BLOB is too large");
+  }
+
+  const int rc =
+      sqlite3_bind_blob(stmt, index, blob.data(), static_cast<int>(blob.size()),
+                        SQLITE_TRANSIENT);
+
+  checkSQLite(rc, db);
+}
+
+void createVersion5Schema(sqlite3 *db) {
+  executeSql(db, R"(
     BEGIN IMMEDIATE;
 
     CREATE TABLE games (
@@ -65,171 +99,163 @@ void createVersion4Schema(sqlite3 *db) {
     );
 
     CREATE TABLE positions (
-      zobrist INTEGER PRIMARY KEY
+      zobrist  INTEGER PRIMARY KEY,
+      game_ids BLOB NOT NULL
     );
 
-    CREATE TABLE position_games (
-      zobrist       INTEGER NOT NULL,
-      mysql_game_id INTEGER NOT NULL,
-
-      PRIMARY KEY (zobrist, mysql_game_id),
-
-      FOREIGN KEY (zobrist)
-        REFERENCES positions(zobrist),
-
-      FOREIGN KEY (mysql_game_id)
-        REFERENCES games(mysql_game_id)
-    );
-
-    CREATE INDEX idx_position_games_game
-      ON position_games(mysql_game_id);
-
-    INSERT INTO schema_migrations(version) VALUES (4);
-    PRAGMA user_version = 4;
+    INSERT INTO schema_migrations(version) VALUES (5);
+    PRAGMA user_version = 5;
 
     COMMIT;
-  )";
-
-  char *error = nullptr;
-  const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &error);
-
-  if (rc != SQLITE_OK) {
-    const std::string message = error ? error : sqlite3_errmsg(db);
-    sqlite3_free(error);
-    throw std::runtime_error("Schema creation failed: " + message);
-  }
+  )");
 }
 
-// Version 3 -> 4.
+// Version 3 -> 5.
 //
-// Version 3 stored SQLite game rowids as 4-byte little-endian
-// values inside positions.reverse_index.
-//
-// Since mysql_game_id was INTEGER PRIMARY KEY, its value was
-// also the SQLite rowid. We can restore the original game IDs.
-void migrateVersion3To4(sqlite3 *db) {
-  const char *createSql = R"(
-    BEGIN IMMEDIATE;
-
-    CREATE TABLE games_v4 (
-      mysql_game_id INTEGER PRIMARY KEY,
-      year          INTEGER NOT NULL DEFAULT 0,
-      date_code     INTEGER NOT NULL DEFAULT 378,
-      white_id      INTEGER NOT NULL DEFAULT 0,
-      black_id      INTEGER NOT NULL DEFAULT 0,
-      result        INTEGER NOT NULL DEFAULT 255
-    );
-
-    CREATE TABLE positions_v4 (
-      zobrist INTEGER PRIMARY KEY
-    );
-
-    CREATE TABLE position_games_v4 (
-      zobrist       INTEGER NOT NULL,
-      mysql_game_id INTEGER NOT NULL,
-
-      PRIMARY KEY (zobrist, mysql_game_id),
-
-      FOREIGN KEY (zobrist)
-        REFERENCES positions_v4(zobrist),
-
-      FOREIGN KEY (mysql_game_id)
-        REFERENCES games_v4(mysql_game_id)
-    );
-
-    INSERT INTO games_v4 (mysql_game_id)
-      SELECT mysql_game_id FROM games;
-
-    INSERT INTO positions_v4 (zobrist)
-      SELECT zobrist FROM positions;
-  )";
-
-  char *error = nullptr;
-  int rc = sqlite3_exec(db, createSql, nullptr, nullptr, &error);
-
-  if (rc != SQLITE_OK) {
-    const std::string message = error ? error : sqlite3_errmsg(db);
-    sqlite3_free(error);
-    sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
-    throw std::runtime_error("Migration 3 -> 4 failed: " + message);
-  }
-
+// Version 3 already stored the packed game IDs in reverse_index.
+// Copy that BLOB directly into game_ids.
+void migrateVersion3To5(sqlite3 *db) {
   try {
-    {
-      Statement readPositions(db,
-                              "SELECT zobrist, reverse_index FROM positions;");
+    executeSql(db, R"(
+      BEGIN IMMEDIATE;
 
-      Statement insertLink(db, "INSERT OR IGNORE INTO position_games_v4 "
-                               "(zobrist, mysql_game_id) VALUES (?, ?);");
+      CREATE TABLE games_v5 (
+        mysql_game_id INTEGER PRIMARY KEY,
+        year          INTEGER NOT NULL DEFAULT 0,
+        date_code     INTEGER NOT NULL DEFAULT 378,
+        white_id      INTEGER NOT NULL DEFAULT 0,
+        black_id      INTEGER NOT NULL DEFAULT 0,
+        result        INTEGER NOT NULL DEFAULT 255
+      );
 
-      while (true) {
-        rc = sqlite3_step(readPositions.get());
+      CREATE TABLE positions_v5 (
+        zobrist  INTEGER PRIMARY KEY,
+        game_ids BLOB NOT NULL
+      );
 
-        if (rc == SQLITE_DONE) {
-          break;
-        }
+      INSERT INTO games_v5(mysql_game_id)
+        SELECT mysql_game_id FROM games;
 
-        checkSQLite(rc, db);
+      INSERT INTO positions_v5(zobrist, game_ids)
+        SELECT zobrist, reverse_index FROM positions;
 
-        const sqlite3_int64 hash = sqlite3_column_int64(readPositions.get(), 0);
-
-        const auto *bytes = static_cast<const std::uint8_t *>(
-            sqlite3_column_blob(readPositions.get(), 1));
-
-        const int byteCount = sqlite3_column_bytes(readPositions.get(), 1);
-
-        if (byteCount % 4 != 0) {
-          throw std::runtime_error(
-              "Invalid reverse_index length during migration");
-        }
-
-        if (byteCount > 0 && bytes == nullptr) {
-          throw std::runtime_error(
-              "Could not read reverse_index during migration");
-        }
-
-        for (int i = 0; i < byteCount; i += 4) {
-          const std::uint32_t gameId =
-              static_cast<std::uint32_t>(bytes[i]) |
-              (static_cast<std::uint32_t>(bytes[i + 1]) << 8) |
-              (static_cast<std::uint32_t>(bytes[i + 2]) << 16) |
-              (static_cast<std::uint32_t>(bytes[i + 3]) << 24);
-
-          sqlite3_bind_int64(insertLink.get(), 1, hash);
-          sqlite3_bind_int64(insertLink.get(), 2,
-                             static_cast<sqlite3_int64>(gameId));
-
-          checkSQLite(sqlite3_step(insertLink.get()), db);
-          insertLink.reset();
-        }
-      }
-    }
-
-    const char *finishSql = R"(
       DROP TABLE positions;
       DROP TABLE games;
 
-      ALTER TABLE games_v4 RENAME TO games;
-      ALTER TABLE positions_v4 RENAME TO positions;
-      ALTER TABLE position_games_v4 RENAME TO position_games;
+      ALTER TABLE games_v5 RENAME TO games;
+      ALTER TABLE positions_v5 RENAME TO positions;
 
-      CREATE INDEX idx_position_games_game
-        ON position_games(mysql_game_id);
-
-      INSERT INTO schema_migrations(version) VALUES (4);
-      PRAGMA user_version = 4;
+      INSERT INTO schema_migrations(version) VALUES (5);
+      PRAGMA user_version = 5;
 
       COMMIT;
-    )";
+    )");
+  } catch (...) {
+    sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
+    throw;
+  }
+}
 
-    error = nullptr;
-    rc = sqlite3_exec(db, finishSql, nullptr, nullptr, &error);
+// Version 4 -> 5.
+//
+// Version 4 stored the game IDs in the position_games table.
+// Convert those rows into packed 4-byte little-endian BLOBs.
+void migrateVersion4To5(sqlite3 *db) {
+  try {
+    executeSql(db, R"(
+      BEGIN IMMEDIATE;
 
-    if (rc != SQLITE_OK) {
-      const std::string message = error ? error : sqlite3_errmsg(db);
-      sqlite3_free(error);
-      throw std::runtime_error("Migration 3 -> 4 failed: " + message);
+      CREATE TABLE games_v5 (
+        mysql_game_id INTEGER PRIMARY KEY,
+        year          INTEGER NOT NULL DEFAULT 0,
+        date_code     INTEGER NOT NULL DEFAULT 378,
+        white_id      INTEGER NOT NULL DEFAULT 0,
+        black_id      INTEGER NOT NULL DEFAULT 0,
+        result        INTEGER NOT NULL DEFAULT 255
+      );
+
+      CREATE TABLE positions_v5 (
+        zobrist  INTEGER PRIMARY KEY,
+        game_ids BLOB NOT NULL
+      );
+
+      INSERT INTO games_v5
+        (mysql_game_id, year, date_code, white_id, black_id, result)
+      SELECT
+        mysql_game_id, year, date_code, white_id, black_id, result
+      FROM games;
+    )");
+
+    Statement readLinks(db,
+                        "SELECT p.zobrist, pg.mysql_game_id "
+                        "FROM positions p "
+                        "LEFT JOIN position_games pg ON pg.zobrist = p.zobrist "
+                        "ORDER BY p.zobrist, pg.mysql_game_id;");
+
+    Statement insertPosition(
+        db, "INSERT INTO positions_v5(zobrist, game_ids) VALUES (?, ?);");
+
+    bool hasCurrentHash = false;
+    sqlite3_int64 currentHash = 0;
+    std::vector<std::uint8_t> gameIds;
+
+    auto flushPosition = [&]() {
+      if (!hasCurrentHash) {
+        return;
+      }
+
+      sqlite3_bind_int64(insertPosition.get(), 1, currentHash);
+      bindBlob(insertPosition.get(), 2, gameIds, db);
+
+      checkSQLite(sqlite3_step(insertPosition.get()), db);
+      insertPosition.reset();
+
+      gameIds.clear();
+    };
+
+    while (true) {
+      const int rc = sqlite3_step(readLinks.get());
+
+      if (rc == SQLITE_DONE) {
+        break;
+      }
+
+      checkSQLite(rc, db);
+
+      const sqlite3_int64 hash = sqlite3_column_int64(readLinks.get(), 0);
+
+      if (!hasCurrentHash || hash != currentHash) {
+        flushPosition();
+        currentHash = hash;
+        hasCurrentHash = true;
+      }
+
+      if (sqlite3_column_type(readLinks.get(), 1) != SQLITE_NULL) {
+        const sqlite3_int64 id = sqlite3_column_int64(readLinks.get(), 1);
+
+        if (id < 0 || id > std::numeric_limits<std::uint32_t>::max()) {
+          throw std::runtime_error("Invalid game ID during migration");
+        }
+
+        appendGameId(gameIds, static_cast<std::uint32_t>(id));
+      }
     }
+
+    flushPosition();
+
+    executeSql(db, R"(
+      DROP TABLE position_games;
+      DROP TABLE positions;
+      DROP TABLE games;
+
+      ALTER TABLE games_v5 RENAME TO games;
+      ALTER TABLE positions_v5 RENAME TO positions;
+
+      INSERT INTO schema_migrations(version) VALUES (5);
+      PRAGMA user_version = 5;
+
+      COMMIT;
+    )");
 
   } catch (...) {
     sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
@@ -240,7 +266,6 @@ void migrateVersion3To4(sqlite3 *db) {
 } // namespace
 
 SQLiteDatabase::SQLiteDatabase(const std::string &filename, bool readOnly) {
-
   const int flags = readOnly ? SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
                              : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
                                    SQLITE_OPEN_FULLMUTEX;
@@ -278,16 +303,7 @@ SQLiteDatabase::~SQLiteDatabase() {
   }
 }
 
-void SQLiteDatabase::execute(const char *sql) {
-  char *error = nullptr;
-  const int rc = sqlite3_exec(db_, sql, nullptr, nullptr, &error);
-
-  if (rc != SQLITE_OK) {
-    const std::string message = error ? error : sqlite3_errmsg(db_);
-    sqlite3_free(error);
-    throw std::runtime_error("SQLite error: " + message);
-  }
-}
+void SQLiteDatabase::execute(const char *sql) { executeSql(db_, sql); }
 
 void SQLiteDatabase::initialize() {
   execute("PRAGMA journal_mode = WAL;");
@@ -317,25 +333,21 @@ void SQLiteDatabase::initialize() {
   }
 
   if (version == 0) {
-    createVersion4Schema(db_);
-    version = 4;
+    createVersion5Schema(db_);
   } else if (version == 3) {
-    migrateVersion3To4(db_);
-    version = 4;
-  } else if (version != 4) {
-    throw std::runtime_error("Unsupported SQLite schema version. "
-                             "Expected version 3 or 4.");
+    migrateVersion3To5(db_);
+  } else if (version == 4) {
+    migrateVersion4To5(db_);
+  } else if (version != 5) {
+    throw std::runtime_error(
+        "Unsupported SQLite schema version. Expected version 3, 4 or 5.");
   }
 
-  if (version != SCHEMA_VERSION) {
-    throw std::runtime_error("SQLite schema migration failed");
-  }
-
-  execute("PRAGMA optimize;");
+  Statement optimize(db_, "PRAGMA optimize;");
+  checkSQLite(sqlite3_step(optimize.get()), db_);
 }
 
 void SQLiteDatabase::insertBatch(const std::vector<ProcessedGame> &games) {
-
   if (games.empty()) {
     return;
   }
@@ -349,27 +361,22 @@ void SQLiteDatabase::insertBatch(const std::vector<ProcessedGame> &games) {
              "VALUES (?, ?, ?, ?, ?, ?) "
              "ON CONFLICT(mysql_game_id) DO NOTHING;");
 
-    Statement insertPosition(
-        db_, "INSERT OR IGNORE INTO positions (zobrist) VALUES (?);");
-
-    Statement insertPositionGame(db_,
-                                 "INSERT OR IGNORE INTO position_games "
-                                 "(zobrist, mysql_game_id) VALUES (?, ?);");
+    Statement upsertPosition(
+        db_,
+        "INSERT INTO positions (zobrist, game_ids) "
+        "VALUES (?, ?) "
+        "ON CONFLICT(zobrist) DO UPDATE SET "
+        "game_ids = CAST(positions.game_ids || excluded.game_ids AS BLOB);");
 
     for (const ProcessedGame &processed : games) {
       const Game &game = processed.game;
 
       sqlite3_bind_int64(insertGame.get(), 1,
                          static_cast<sqlite3_int64>(game.mysqlId));
-
       sqlite3_bind_int(insertGame.get(), 2, static_cast<int>(game.year));
-
       sqlite3_bind_int(insertGame.get(), 3, static_cast<int>(game.dateCode));
-
       sqlite3_bind_int(insertGame.get(), 4, static_cast<int>(game.whiteId));
-
       sqlite3_bind_int(insertGame.get(), 5, static_cast<int>(game.blackId));
-
       sqlite3_bind_int(insertGame.get(), 6, static_cast<int>(game.result));
 
       checkSQLite(sqlite3_step(insertGame.get()), db_);
@@ -377,27 +384,29 @@ void SQLiteDatabase::insertBatch(const std::vector<ProcessedGame> &games) {
       const bool inserted = sqlite3_changes(db_) != 0;
       insertGame.reset();
 
-      // Game already exists: do not duplicate its position links.
+      // Already imported: don't append its IDs again.
       if (!inserted) {
         continue;
       }
 
-      for (const PositionHash hash : processed.positions) {
-        // Preserve all 64 bits of the unsigned Zobrist hash.
+      // Avoid duplicate IDs if a position occurs more than once in a game.
+      std::vector<PositionHash> uniquePositions = processed.positions;
+      std::sort(uniquePositions.begin(), uniquePositions.end());
+      uniquePositions.erase(
+          std::unique(uniquePositions.begin(), uniquePositions.end()),
+          uniquePositions.end());
+
+      for (const PositionHash hash : uniquePositions) {
         const sqlite3_int64 sqliteHash = std::bit_cast<sqlite3_int64>(hash);
 
-        sqlite3_bind_int64(insertPosition.get(), 1, sqliteHash);
+        std::vector<std::uint8_t> gameIdBlob;
+        appendGameId(gameIdBlob, game.mysqlId);
 
-        checkSQLite(sqlite3_step(insertPosition.get()), db_);
-        insertPosition.reset();
+        sqlite3_bind_int64(upsertPosition.get(), 1, sqliteHash);
+        bindBlob(upsertPosition.get(), 2, gameIdBlob, db_);
 
-        sqlite3_bind_int64(insertPositionGame.get(), 1, sqliteHash);
-
-        sqlite3_bind_int64(insertPositionGame.get(), 2,
-                           static_cast<sqlite3_int64>(game.mysqlId));
-
-        checkSQLite(sqlite3_step(insertPositionGame.get()), db_);
-        insertPositionGame.reset();
+        checkSQLite(sqlite3_step(upsertPosition.get()), db_);
+        upsertPosition.reset();
       }
     }
 
