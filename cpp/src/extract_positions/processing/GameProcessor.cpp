@@ -29,11 +29,16 @@ constexpr std::array<std::string_view, 8> PIECES = {"p", "n", "b", "r",
 
 } // namespace
 
-ProcessedGame processGame(Game game) {
+ProcessedGame processGame(const Game &game) {
   ProcessedGame processed;
-  processed.game = std::move(game);
+  processed.mysqlId = game.mysqlId;
+  processed.year = game.year;
+  processed.dateCode = game.dateCode;
+  processed.whiteId = game.whiteId;
+  processed.blackId = game.blackId;
+  processed.result = game.result;
 
-  const auto &moves = processed.game.moves;
+  const auto &moves = game.moves;
   const std::size_t scannedBytes = std::min(MAX_HALF_MOVES * 2, moves.size());
 
   chess::Board board;
@@ -62,9 +67,6 @@ ProcessedGame processGame(Game game) {
 
     processed.positions.insert(board.zobrist());
   }
-
-  processed.game.moves.clear();
-  processed.game.moves.shrink_to_fit();
 
   return processed;
 }

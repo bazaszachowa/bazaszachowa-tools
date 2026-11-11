@@ -5,6 +5,6 @@
 
 namespace chessdb {
 
-ProcessedGame processGame(Game game);
+ProcessedGame processGame(const Game &game);
 
 } // namespace chessdb

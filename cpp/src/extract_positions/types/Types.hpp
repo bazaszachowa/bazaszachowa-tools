@@ -37,7 +37,13 @@ struct Game {
 };
 
 struct ProcessedGame {
-  Game game;
+  MysqlGameId mysqlId{};
+  std::uint16_t year{};
+  DateCode dateCode{UNKNOWN_DATE};
+  PlayerId whiteId{};
+  PlayerId blackId{};
+  GameResult result{GameResult::Unknown};
+
   std::unordered_set<PositionHash> positions;
 };
 

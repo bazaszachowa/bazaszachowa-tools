@@ -4,6 +4,7 @@
 #include <exception>
 #include <future>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -76,9 +77,9 @@ void processGames(unsigned int workerId, GameQueue &input,
     vector<ProcessedGame> processedBatch;
     processedBatch.reserve(batch.size());
 
-    for (auto &game : batch) {
-      processedBatch.push_back(processGame(std::move(game)));
-    }
+    std::transform(std::make_move_iterator(batch.begin()),
+                   std::make_move_iterator(batch.end()),
+                   std::back_inserter(processedBatch), processGame);
 
     processedCount += processedBatch.size();
 

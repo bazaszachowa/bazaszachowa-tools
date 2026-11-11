@@ -6,6 +6,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace chessdb {
@@ -367,40 +368,47 @@ void SQLiteDatabase::insertBatch(const std::vector<ProcessedGame> &games) {
         "ON CONFLICT(zobrist) DO UPDATE SET "
         "game_ids = CAST(positions.game_ids || excluded.game_ids AS BLOB);");
 
-    for (const ProcessedGame &processed : games) {
-      const Game &game = processed.game;
+    // Collect IDs by position hash across the entire batch.
+    std::unordered_map<PositionHash, std::vector<std::uint8_t>> positionIds;
 
-      sqlite3_bind_int64(insertGame.get(), 1,
-                         static_cast<sqlite3_int64>(game.mysqlId));
-      sqlite3_bind_int(insertGame.get(), 2, static_cast<int>(game.year));
-      sqlite3_bind_int(insertGame.get(), 3, static_cast<int>(game.dateCode));
-      sqlite3_bind_int(insertGame.get(), 4, static_cast<int>(game.whiteId));
-      sqlite3_bind_int(insertGame.get(), 5, static_cast<int>(game.blackId));
-      sqlite3_bind_int(insertGame.get(), 6, static_cast<int>(game.result));
+    for (const ProcessedGame &processed : games) {
+
+      sqlite3_bind_int64(insertGame.get(), 1, processed.mysqlId);
+      sqlite3_bind_int(insertGame.get(), 2, processed.year);
+      sqlite3_bind_int(insertGame.get(), 3, processed.dateCode);
+      sqlite3_bind_int(insertGame.get(), 4, processed.whiteId);
+      sqlite3_bind_int(insertGame.get(), 5, processed.blackId);
+      sqlite3_bind_int(insertGame.get(), 6, static_cast<int>(processed.result));
 
       checkSQLite(sqlite3_step(insertGame.get()), db_);
 
       const bool inserted = sqlite3_changes(db_) != 0;
       insertGame.reset();
 
-      // Already imported: don't append its IDs again.
       if (!inserted) {
         continue;
       }
 
+      // Create the packed game ID once per game.
+      std::vector<std::uint8_t> gameIdBlob;
+      gameIdBlob.reserve(sizeof(processed.mysqlId));
+      appendGameId(gameIdBlob, processed.mysqlId);
+
       for (const PositionHash hash : processed.positions) {
-        const sqlite3_int64 sqliteHash = std::bit_cast<sqlite3_int64>(hash);
-
-        std::vector<std::uint8_t> gameIdBlob;
-        gameIdBlob.reserve(sizeof(game.mysqlId));
-        appendGameId(gameIdBlob, game.mysqlId);
-
-        sqlite3_bind_int64(upsertPosition.get(), 1, sqliteHash);
-        bindBlob(upsertPosition.get(), 2, gameIdBlob, db_);
-
-        checkSQLite(sqlite3_step(upsertPosition.get()), db_);
-        upsertPosition.reset();
+        auto &ids = positionIds[hash];
+        ids.insert(ids.end(), gameIdBlob.begin(), gameIdBlob.end());
       }
+    }
+
+    // One UPSERT per distinct position hash in this batch.
+    for (const auto &[hash, ids] : positionIds) {
+      const sqlite3_int64 sqliteHash = std::bit_cast<sqlite3_int64>(hash);
+
+      sqlite3_bind_int64(upsertPosition.get(), 1, sqliteHash);
+      bindBlob(upsertPosition.get(), 2, ids, db_);
+
+      checkSQLite(sqlite3_step(upsertPosition.get()), db_);
+      upsertPosition.reset();
     }
 
     execute("COMMIT;");
