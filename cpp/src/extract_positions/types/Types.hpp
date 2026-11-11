@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <unordered_set>
 #include <vector>
 
 namespace chessdb {
@@ -37,7 +38,7 @@ struct Game {
 
 struct ProcessedGame {
   Game game;
-  std::vector<PositionHash> positions;
+  std::unordered_set<PositionHash> positions;
 };
 
 } // namespace chessdb

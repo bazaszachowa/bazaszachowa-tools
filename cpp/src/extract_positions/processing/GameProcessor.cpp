@@ -37,10 +37,6 @@ ProcessedGame processGame(Game game) {
   const std::size_t scannedBytes = std::min(MAX_HALF_MOVES * 2, moves.size());
 
   chess::Board board;
-
-  std::unordered_set<PositionHash> uniquePositions;
-  uniquePositions.reserve(MAX_HALF_MOVES);
-
   processed.positions.reserve(MAX_HALF_MOVES);
 
   for (std::size_t i = 0; i + 1 < scannedBytes; i += 2) {
@@ -64,11 +60,7 @@ ProcessedGame processGame(Game game) {
     const chess::Move move = chess::uci::uciToMove(board, uci);
     board.makeMove(move);
 
-    const PositionHash hash = board.zobrist();
-
-    if (uniquePositions.insert(hash).second) {
-      processed.positions.push_back(hash);
-    }
+    processed.positions.insert(board.zobrist());
   }
 
   processed.game.moves.clear();

@@ -1,7 +1,6 @@
 
 #include "SQLiteDatabase.hpp"
 
-#include <algorithm>
 #include <bit>
 #include <cstdint>
 #include <limits>
@@ -389,17 +388,11 @@ void SQLiteDatabase::insertBatch(const std::vector<ProcessedGame> &games) {
         continue;
       }
 
-      // Avoid duplicate IDs if a position occurs more than once in a game.
-      std::vector<PositionHash> uniquePositions = processed.positions;
-      std::sort(uniquePositions.begin(), uniquePositions.end());
-      uniquePositions.erase(
-          std::unique(uniquePositions.begin(), uniquePositions.end()),
-          uniquePositions.end());
-
-      for (const PositionHash hash : uniquePositions) {
+      for (const PositionHash hash : processed.positions) {
         const sqlite3_int64 sqliteHash = std::bit_cast<sqlite3_int64>(hash);
 
         std::vector<std::uint8_t> gameIdBlob;
+        gameIdBlob.reserve(sizeof(game.mysqlId));
         appendGameId(gameIdBlob, game.mysqlId);
 
         sqlite3_bind_int64(upsertPosition.get(), 1, sqliteHash);
