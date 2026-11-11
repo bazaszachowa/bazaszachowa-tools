@@ -116,84 +116,12 @@ std::uint64_t MySQLGameReader::countGames() {
   return std::stoull(row[0]);
 }
 
-std::vector<Game> MySQLGameReader::fetchBatch(std::uint64_t offset,
-                                              std::uint32_t limit) {
-
-  const std::string sql = "SELECT `id`, `moves_blob`, `Year`, `Month`, `Day`, "
-                          "`WhiteID`, `BlackID`, `Result` "
-                          "FROM `" +
-                          sourceTable_ +
-                          "` "
-                          "ORDER BY `id` "
-                          "LIMIT " +
-                          std::to_string(limit) + " OFFSET " +
-                          std::to_string(offset);
-
-  auto stmt = conn_.statement(sql);
-  stmt.execute();
-
-  auto metadata = stmt.resultMetadata();
-
-  mysql::BoundResult<8> result;
-  stmt.bindResult(result.data());
-
-  std::vector<Game> games;
-  games.reserve(limit);
-
-  while (true) {
-    const int rc = stmt.fetch();
-
-    if (rc == MYSQL_NO_DATA) {
-      break;
-    }
-
-    if (rc == MYSQL_DATA_TRUNCATED) {
-      throw std::runtime_error(
-          "MySQL result truncated while fetching moves_blob");
-    }
-
-    if (rc != 0) {
-      throw std::runtime_error("MySQL fetch failed, error code: " +
-                               std::to_string(rc));
-    }
-
-    const std::string idString = result.get(0);
-    const std::string movesString = result.get(1);
-    const std::string yearString = result.get(2);
-    const std::string monthString = result.get(3);
-    const std::string dayString = result.get(4);
-    const std::string whiteIdString = result.get(5);
-    const std::string blackIdString = result.get(6);
-    const std::string resultString = result.get(7);
-
-    Game game;
-
-    game.mysqlId = parseInteger<MysqlGameId>(idString, "id");
-    game.year = parseInteger<std::uint16_t>(yearString, "Year");
-    game.dateCode = encodeDate(monthString, dayString);
-    game.whiteId = parseInteger<PlayerId>(whiteIdString, "WhiteID");
-    game.blackId = parseInteger<PlayerId>(blackIdString, "BlackID");
-    game.result = parseResult(resultString);
-    game.moves.reserve(movesString.size());
-
-    for (unsigned char byte : movesString) {
-      game.moves.push_back(static_cast<std::uint8_t>(byte));
-    }
-
-    games.push_back(std::move(game));
-  }
-
-  stmt.freeResult();
-
-  return games;
-}
-
-std::vector<MysqlGameId> MySQLGameReader::fetchGameIds(std::uint64_t offset,
+std::vector<MysqlGameId> MySQLGameReader::fetchGameIds(MysqlGameId lastId,
                                                        std::uint32_t limit) {
 
   const std::string sql = "SELECT `id` FROM `" + sourceTable_ +
-                          "` ORDER BY `id` LIMIT " + std::to_string(limit) +
-                          " OFFSET " + std::to_string(offset);
+                          "` WHERE `id` > " + std::to_string(lastId) +
+                          " ORDER BY `id` LIMIT " + std::to_string(limit);
 
   auto stmt = conn_.statement(sql);
   stmt.execute();

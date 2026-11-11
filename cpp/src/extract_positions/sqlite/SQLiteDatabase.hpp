@@ -5,7 +5,6 @@
 #include "../types/Types.hpp"
 
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 namespace chessdb {
@@ -19,8 +18,6 @@ public:
   SQLiteDatabase &operator=(const SQLiteDatabase &) = delete;
 
   void insertBatch(const std::vector<ProcessedGame> &games);
-  std::unordered_set<MysqlGameId>
-  findExistingGames(const std::vector<MysqlGameId> &ids);
   void prepareGameIdSync();
   void insertMysqlGameIds(const std::vector<MysqlGameId> &ids);
   void removeGamesMissingFromMysql();

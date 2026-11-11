@@ -187,24 +187,25 @@ int main(int argc, const char *argv[]) {
       database.prepareGameIdSync();
 
       uint64_t collected = 0;
+      MysqlGameId lastId = 0;
 
-      for (uint64_t offset = 0; offset < totalGames;
-           offset += GAME_BATCH_SIZE) {
+      constexpr uint32_t ID_BATCH_SIZE = 10000;
 
-        const auto limit = static_cast<uint32_t>(
-            min<uint64_t>(GAME_BATCH_SIZE, totalGames - offset));
+      while (true) {
+        auto ids = reader.fetchGameIds(lastId, ID_BATCH_SIZE);
 
-        auto ids = reader.fetchGameIds(offset, limit);
+        if (ids.empty()) {
+          break;
+        }
 
         database.insertMysqlGameIds(ids);
 
         collected += ids.size();
+        lastId = ids.back();
 
-        cout << "Collected MySQL IDs: " << collected << " / " << totalGames
-             << '\n';
-
-        if (ids.empty()) {
-          break;
+        if (collected % 100000 == 0 || ids.size() < ID_BATCH_SIZE) {
+          cout << "Collected MySQL IDs: " << collected << " / " << totalGames
+               << '\n';
         }
       }
 
