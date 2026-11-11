@@ -2,6 +2,6 @@
 .vscode/
 python/repeatable_tasks/pgns/
 python/repeatable_tasks/downloaded_zips/
-chess.sqlite
-chess.sqlite-shm
-chess.sqlite-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
