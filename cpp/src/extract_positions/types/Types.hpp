@@ -7,7 +7,7 @@
 namespace chessdb {
 
 using MysqlGameId = std::uint32_t;
-using PlayerId = std::uint16_t;
+using PlayerId = std::uint32_t;
 using PositionHash = std::uint64_t;
 using MovesBlob = std::vector<std::uint8_t>;
 

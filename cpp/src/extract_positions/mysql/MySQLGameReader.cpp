@@ -79,18 +79,17 @@ GameResult parseResult(const std::string &value) {
     return GameResult::Unknown;
   }
 
-  const unsigned int result = parseInteger<unsigned int>(value, "Result");
-
-  switch (result) {
-  case 0:
+  if (value == "0-1") {
     return GameResult::BlackWin;
-  case 1:
-    return GameResult::Draw;
-  case 2:
-    return GameResult::WhiteWin;
-  default:
-    return GameResult::Unknown;
   }
+  if (value == "1-0") {
+    return GameResult::WhiteWin;
+  }
+  if (value == "1/2-1/2") {
+    return GameResult::Draw;
+  }
+
+  return GameResult::Unknown;
 }
 
 } // namespace
