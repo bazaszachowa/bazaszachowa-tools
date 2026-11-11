@@ -72,7 +72,6 @@ std::vector<Game> MySQLGameReader::fetchBatch(std::uint64_t offset,
     }
 
     Game game;
-    game.gamesTable = sourceTable_;
     game.mysqlId = static_cast<MysqlGameId>(parsedId);
 
     game.moves.reserve(movesString.size());

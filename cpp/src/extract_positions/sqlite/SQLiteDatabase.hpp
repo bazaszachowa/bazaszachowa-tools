@@ -16,7 +16,7 @@ public:
   SQLiteDatabase(const SQLiteDatabase &) = delete;
   SQLiteDatabase &operator=(const SQLiteDatabase &) = delete;
 
-  bool containsGame(GamesTable table, MysqlGameId gameId);
+  bool containsGame(MysqlGameId gameId);
 
   sqlite3 *handle() const noexcept { return db_; }
 
