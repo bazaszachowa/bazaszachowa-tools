@@ -61,25 +61,46 @@ void fetchGames(const string &table, unsigned int workerId, uint64_t offset,
        << " games.\n";
 }
 
-void processGames(unsigned int workerId, GameQueue &input,
-                  ProcessedQueue &output) {
+void processGames(unsigned int workerId, const string &databasePath,
+                  GameQueue &input, ProcessedQueue &output) {
+  SQLiteDatabase database(databasePath, true);
+
   uint64_t processedCount = 0;
+  uint64_t skippedCount = 0;
 
   while (true) {
     vector<Game> batch;
     input.wait_dequeue(batch);
 
-    // Empty batch signals that no more games will arrive.
     if (batch.empty()) {
       break;
+    }
+
+    vector<MysqlGameId> ids;
+    ids.reserve(batch.size());
+
+    for (const auto &game : batch) {
+      ids.push_back(game.mysqlId);
+    }
+
+    const auto existing = database.findExistingGames(ids);
+    const size_t originalSize = batch.size();
+
+    erase_if(batch, [&existing](const Game &game) {
+      return existing.contains(game.mysqlId);
+    });
+
+    skippedCount += originalSize - batch.size();
+
+    if (batch.empty()) {
+      continue;
     }
 
     vector<ProcessedGame> processedBatch;
     processedBatch.reserve(batch.size());
 
-    std::transform(std::make_move_iterator(batch.begin()),
-                   std::make_move_iterator(batch.end()),
-                   std::back_inserter(processedBatch), processGame);
+    transform(batch.begin(), batch.end(), back_inserter(processedBatch),
+              processGame);
 
     processedCount += processedBatch.size();
 
@@ -89,7 +110,7 @@ void processGames(unsigned int workerId, GameQueue &input,
   }
 
   cout << "Processor " << workerId << " finished. Processed " << processedCount
-       << " games.\n";
+       << ", skipped " << skippedCount << " games.\n";
 }
 
 void writeGames(const string &databasePath, ProcessedQueue &input) {
@@ -164,8 +185,8 @@ int main(int argc, const char *argv[]) {
     processors.reserve(processingThreads);
 
     for (unsigned int i = 0; i < processingThreads; ++i) {
-      processors.push_back(async(launch::async, processGames, i, ref(gameQueue),
-                                 ref(processedQueue)));
+      processors.push_back(async(launch::async, processGames, i, databasePath,
+                                 ref(gameQueue), ref(processedQueue)));
     }
 
     // Start MySQL producers.
