@@ -4,7 +4,6 @@
 #include <exception>
 #include <future>
 #include <iostream>
-#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -14,6 +13,7 @@
 
 #include <concurrentqueue/blockingconcurrentqueue.h>
 
+#include "CompletionGuard.hpp"
 #include "mysql/MySQLGameReader.hpp"
 #include "processing/GameProcessor.hpp"
 #include "sqlite/SQLiteDatabase.hpp"
@@ -29,20 +29,29 @@ using ProcessedQueue =
 const unsigned int detectedThreads = thread::hardware_concurrency();
 const unsigned int N_THREADS = max(2u, detectedThreads) - 1;
 
-void fetchGames(const string &table, unsigned int workerId, uint64_t offset,
-                uint64_t count, GameQueue &output) {
-  uint64_t fetched = 0;
+void fetchGames(const string &table, unsigned int workerId,
+                const vector<MysqlGameId> &missingIds, size_t begin, size_t end,
+                GameQueue &output, atomic<unsigned int> &activeProducers) {
+  CompletionGuard completion(activeProducers);
 
   MySQLGameReader reader(table);
 
-  while (fetched < count) {
-    const uint32_t limit =
-        static_cast<uint32_t>(min<uint64_t>(GAME_BATCH_SIZE, count - fetched));
+  uint64_t fetched = 0;
+  uint64_t enqueued = 0;
+  uint64_t batches = 0;
 
-    auto games = reader.fetchBatch(offset + fetched, limit);
+  for (size_t offset = begin; offset < end; offset += GAME_BATCH_SIZE) {
+    const size_t count = min<size_t>(GAME_BATCH_SIZE, end - offset);
 
-    if (games.empty()) {
-      break;
+    vector<MysqlGameId> ids(missingIds.begin() + offset,
+                            missingIds.begin() + offset + count);
+
+    auto games = reader.fetchGamesByIds(ids);
+
+    if (games.size() != ids.size()) {
+      throw runtime_error("MySQL worker " + to_string(workerId) +
+                          ": requested " + to_string(ids.size()) +
+                          " games, fetched " + to_string(games.size()));
     }
 
     const size_t batchSize = games.size();
@@ -52,68 +61,63 @@ void fetchGames(const string &table, unsigned int workerId, uint64_t offset,
     }
 
     fetched += batchSize;
-
-    cout << "MySQL worker " << workerId << ": fetched " << fetched << " / "
-         << count << '\n';
+    enqueued += batchSize;
+    ++batches;
   }
 
-  cout << "MySQL worker " << workerId << " finished. Fetched " << fetched
-       << " games.\n";
+  cout << "MySQL worker " << workerId << " finished: fetched=" << fetched
+       << ", enqueued=" << enqueued << ", batches=" << batches << '\n';
 }
 
-void processGames(unsigned int workerId, const string &databasePath,
-                  GameQueue &input, ProcessedQueue &output) {
-  SQLiteDatabase database(databasePath, true);
+void processGames(unsigned int workerId, GameQueue &input,
+                  ProcessedQueue &output, atomic<unsigned int> &activeProducers,
+                  atomic<unsigned int> &activeProcessors) {
+  CompletionGuard completion(activeProcessors);
 
   uint64_t processedCount = 0;
-  uint64_t skippedCount = 0;
+  uint64_t batchesReceived = 0;
+  uint64_t batchesEnqueued = 0;
 
   while (true) {
     vector<Game> batch;
-    input.wait_dequeue(batch);
 
-    if (batch.empty()) {
-      break;
-    }
+    if (input.try_dequeue(batch)) {
+      vector<ProcessedGame> processedBatch;
+      processedBatch.reserve(batch.size());
 
-    vector<MysqlGameId> ids;
-    ids.reserve(batch.size());
+      transform(batch.begin(), batch.end(), back_inserter(processedBatch),
+                processGame);
 
-    for (const auto &game : batch) {
-      ids.push_back(game.mysqlId);
-    }
+      if (processedBatch.size() != batch.size()) {
+        throw runtime_error("Processor produced an incorrect batch size");
+      }
 
-    const auto existing = database.findExistingGames(ids);
-    const size_t originalSize = batch.size();
+      processedCount += processedBatch.size();
+      ++batchesReceived;
 
-    erase_if(batch, [&existing](const Game &game) {
-      return existing.contains(game.mysqlId);
-    });
+      if (!output.enqueue(std::move(processedBatch))) {
+        throw runtime_error("Could not enqueue processed batch");
+      }
 
-    skippedCount += originalSize - batch.size();
-
-    if (batch.empty()) {
+      ++batchesEnqueued;
       continue;
     }
 
-    vector<ProcessedGame> processedBatch;
-    processedBatch.reserve(batch.size());
-
-    transform(batch.begin(), batch.end(), back_inserter(processedBatch),
-              processGame);
-
-    processedCount += processedBatch.size();
-
-    if (!output.enqueue(std::move(processedBatch))) {
-      throw runtime_error("Could not enqueue processed batch");
+    if (activeProducers.load(std::memory_order_acquire) == 0) {
+      break;
     }
+
+    this_thread::yield();
   }
 
-  cout << "Processor " << workerId << " finished. Processed " << processedCount
-       << ", skipped " << skippedCount << " games.\n";
+  cout << "Processor " << workerId
+       << " finished: received batches=" << batchesReceived
+       << ", enqueued batches=" << batchesEnqueued
+       << ", processed games=" << processedCount << '\n';
 }
 
-void writeGames(const string &databasePath, ProcessedQueue &input) {
+void writeGames(const string &databasePath, ProcessedQueue &input,
+                atomic<unsigned int> &activeProcessors) {
   SQLiteDatabase database(databasePath);
 
   uint64_t insertedBatches = 0;
@@ -121,26 +125,26 @@ void writeGames(const string &databasePath, ProcessedQueue &input) {
 
   while (true) {
     vector<ProcessedGame> batch;
-    input.wait_dequeue(batch);
 
-    // Empty batch signals that processing is finished.
-    if (batch.empty()) {
+    if (input.try_dequeue(batch)) {
+      processedGames += batch.size();
+
+      database.insertBatch(batch);
+      ++insertedBatches;
+
+      cout << "SQLite writer committed batch " << insertedBatches << '\n';
+      continue;
+    }
+
+    if (activeProcessors.load(std::memory_order_acquire) == 0) {
       break;
     }
 
-    processedGames += batch.size();
-
-    cout << "SQLite writer received batch: " << batch.size() << " games\n";
-
-    database.insertBatch(batch);
-
-    ++insertedBatches;
-
-    cout << "SQLite writer committed batch " << insertedBatches << '\n';
+    this_thread::yield();
   }
 
-  cout << "SQLite writer finished. Processed " << processedGames << " games in "
-       << insertedBatches << " batches.\n";
+  cout << "SQLite writer finished: games=" << processedGames
+       << ", batches=" << insertedBatches << '\n';
 }
 
 int main(int argc, const char *argv[]) {
@@ -166,51 +170,101 @@ int main(int argc, const char *argv[]) {
 
     cout << "Processing workers: " << processingThreads << '\n';
 
-    MySQLGameReader countReader(table);
-    const uint64_t totalGames = countReader.countGames();
+    // -------------------------------------------------
+    // Synchronize MySQL IDs with SQLite.
+    // -------------------------------------------------
+
+    MySQLGameReader reader(table);
+    const uint64_t totalGames = reader.countGames();
 
     cout << "Total MySQL games: " << totalGames << '\n';
 
-    if (totalGames == 0) {
-      cout << "No games to import.\n";
+    vector<MysqlGameId> missingIds;
+
+    {
+      SQLiteDatabase database(databasePath);
+
+      database.prepareGameIdSync();
+
+      uint64_t collected = 0;
+
+      for (uint64_t offset = 0; offset < totalGames;
+           offset += GAME_BATCH_SIZE) {
+
+        const auto limit = static_cast<uint32_t>(
+            min<uint64_t>(GAME_BATCH_SIZE, totalGames - offset));
+
+        auto ids = reader.fetchGameIds(offset, limit);
+
+        database.insertMysqlGameIds(ids);
+
+        collected += ids.size();
+
+        cout << "Collected MySQL IDs: " << collected << " / " << totalGames
+             << '\n';
+
+        if (ids.empty()) {
+          break;
+        }
+      }
+
+      // Remove SQLite games that no longer exist in MySQL.
+      database.removeGamesMissingFromMysql();
+
+      // Find games that need importing.
+      missingIds = database.findMissingMysqlGames();
+    }
+
+    cout << "Games to import: " << missingIds.size() << '\n';
+
+    if (missingIds.empty()) {
+      cout << "SQLite is already synchronized.\n";
       return 0;
     }
 
-    // Start the single SQLite writer.
-    auto writer =
-        async(launch::async, writeGames, databasePath, ref(processedQueue));
+    // -------------------------------------------------
+    // Start the pipeline.
+    // -------------------------------------------------
 
-    // Start processing workers.
+    const size_t gamesPerThread =
+        (missingIds.size() + N_THREADS - 1) / N_THREADS;
+
+    const unsigned int producerCount =
+        static_cast<unsigned int>(min<size_t>(N_THREADS, missingIds.size()));
+
+    atomic<unsigned int> activeProducers{producerCount};
+    atomic<unsigned int> activeProcessors{processingThreads};
+
+    auto writer = async(launch::async, writeGames, databasePath,
+                        ref(processedQueue), ref(activeProcessors));
+
     vector<future<void>> processors;
     processors.reserve(processingThreads);
 
     for (unsigned int i = 0; i < processingThreads; ++i) {
-      processors.push_back(async(launch::async, processGames, i, databasePath,
-                                 ref(gameQueue), ref(processedQueue)));
+      processors.push_back(async(launch::async, processGames, i, ref(gameQueue),
+                                 ref(processedQueue), ref(activeProducers),
+                                 ref(activeProcessors)));
     }
 
-    // Start MySQL producers.
     vector<future<void>> producers;
-    producers.reserve(N_THREADS);
+    producers.reserve(producerCount);
 
-    const uint64_t gamesPerThread = (totalGames + N_THREADS - 1) / N_THREADS;
+    for (unsigned int i = 0; i < producerCount; ++i) {
+      const size_t begin = i * gamesPerThread;
+      const size_t end = min(begin + gamesPerThread, missingIds.size());
 
-    for (unsigned int i = 0; i < N_THREADS; ++i) {
-      const uint64_t offset = i * gamesPerThread;
-
-      if (offset >= totalGames) {
-        break;
-      }
-
-      const uint64_t count = min(gamesPerThread, totalGames - offset);
-
-      producers.push_back(async(launch::async, fetchGames, table, i, offset,
-                                count, ref(gameQueue)));
+      producers.push_back(async(launch::async, fetchGames, table, i,
+                                cref(missingIds), begin, end, ref(gameQueue),
+                                ref(activeProducers)));
     }
 
     exception_ptr firstError;
 
-    // Wait for all MySQL producers.
+    // -------------------------------------------------
+    // Wait for MySQL producers.
+    // -------------------------------------------------
+
     for (auto &producer : producers) {
       try {
         producer.get();
@@ -221,12 +275,12 @@ int main(int argc, const char *argv[]) {
       }
     }
 
-    // Signal that no more MySQL batches will arrive.
-    for (unsigned int i = 0; i < processingThreads; ++i) {
-      gameQueue.enqueue(vector<Game>{});
-    }
+    // -------------------------------------------------
+    // Wait for processors.
+    // They exit after all producers finish and the queue
+    // has been drained.
+    // -------------------------------------------------
 
-    // Wait for processing workers.
     for (auto &processor : processors) {
       try {
         processor.get();
@@ -237,10 +291,12 @@ int main(int argc, const char *argv[]) {
       }
     }
 
-    // Signal that processing is finished.
-    processedQueue.enqueue(vector<ProcessedGame>{});
-
+    // -------------------------------------------------
     // Wait for SQLite writer.
+    // It exits after all processors finish and its queue
+    // has been drained.
+    // -------------------------------------------------
+
     try {
       writer.get();
     } catch (...) {

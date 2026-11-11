@@ -492,4 +492,74 @@ SQLiteDatabase::findExistingGames(const std::vector<MysqlGameId> &ids) {
   return existing;
 }
 
+void SQLiteDatabase::prepareGameIdSync() {
+  execute(R"(
+        CREATE TEMP TABLE IF NOT EXISTS mysql_game_ids (
+            id INTEGER PRIMARY KEY
+        );
+        DELETE FROM mysql_game_ids;
+    )");
+}
+
+void SQLiteDatabase::insertMysqlGameIds(const std::vector<MysqlGameId> &ids) {
+
+  if (ids.empty()) {
+    return;
+  }
+
+  execute("BEGIN;");
+
+  try {
+    Statement stmt(db_, "INSERT OR IGNORE INTO mysql_game_ids(id) VALUES (?);");
+
+    for (const auto id : ids) {
+      sqlite3_bind_int64(stmt.get(), 1, id);
+      checkSQLite(sqlite3_step(stmt.get()), db_);
+      stmt.reset();
+    }
+
+    execute("COMMIT;");
+  } catch (...) {
+    try {
+      execute("ROLLBACK;");
+    } catch (...) {
+    }
+    throw;
+  }
+}
+
+void SQLiteDatabase::removeGamesMissingFromMysql() {
+  execute(R"(
+        DELETE FROM games
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM mysql_game_ids
+            WHERE mysql_game_ids.id = games.mysql_game_id
+        );
+    )");
+}
+
+std::vector<MysqlGameId> SQLiteDatabase::findMissingMysqlGames() {
+  std::vector<MysqlGameId> ids;
+
+  Statement stmt(db_, "SELECT id FROM mysql_game_ids "
+                      "WHERE NOT EXISTS ("
+                      "    SELECT 1 FROM games "
+                      "    WHERE games.mysql_game_id = mysql_game_ids.id"
+                      ") ORDER BY id;");
+
+  int rc;
+
+  while ((rc = sqlite3_step(stmt.get())) == SQLITE_ROW) {
+    ids.push_back(
+        static_cast<MysqlGameId>(sqlite3_column_int64(stmt.get(), 0)));
+  }
+
+  if (rc != SQLITE_DONE) {
+    throw std::runtime_error(sqlite3_errmsg(db_));
+  }
+
+  return ids;
+}
+
 } // namespace chessdb

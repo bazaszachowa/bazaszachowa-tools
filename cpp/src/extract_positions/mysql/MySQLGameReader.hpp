@@ -16,6 +16,10 @@ public:
   std::uint64_t countGames();
 
   std::vector<Game> fetchBatch(std::uint64_t offset, std::uint32_t limit);
+  std::vector<MysqlGameId> fetchGameIds(std::uint64_t offset,
+                                        std::uint32_t limit);
+
+  std::vector<Game> fetchGamesByIds(const std::vector<MysqlGameId> &ids);
 
 private:
   std::string sourceTable_;

@@ -21,6 +21,10 @@ public:
   void insertBatch(const std::vector<ProcessedGame> &games);
   std::unordered_set<MysqlGameId>
   findExistingGames(const std::vector<MysqlGameId> &ids);
+  void prepareGameIdSync();
+  void insertMysqlGameIds(const std::vector<MysqlGameId> &ids);
+  void removeGamesMissingFromMysql();
+  std::vector<MysqlGameId> findMissingMysqlGames();
 
 private:
   sqlite3 *db_ = nullptr;
