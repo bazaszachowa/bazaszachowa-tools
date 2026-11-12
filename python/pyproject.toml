@@ -14,7 +14,6 @@ dependencies = [
     "pymongo>=4.17,<5",
     "python-dateutil>=2.9,<3",
     "requests>=2.34,<3",
-    "tensorflow[and-cuda]>=2.21.0",
     "typing_extensions>=4.16,<5",
     "Unidecode>=1.4,<2",
     "zstandard>=0.25,<1",
@@ -24,7 +23,13 @@ dependencies = [
 dev = ["mypy>=2.3,<3", "mypy_extensions>=1.1,<2", "ruff>=0.16,<1"]
 
 curl_cffi = ["curl_cffi>=0.16,<1"]
-analysis = ["numpy", "keras", "tensorflow"]
+analysis = [
+    "matplotlib",
+    "numpy",
+    "keras",
+    "tensorflow",
+    "tensorflow[and-cuda]>=2.21.0",
+]
 
 [tool.ruff]
 line-length = 88
