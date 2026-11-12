@@ -97,7 +97,7 @@ void processGames(unsigned int workerId, GameQueue &input,
       continue;
     }
 
-    if (activeProducers.load(memory_order_acquire) == 0) {
+    if (activeProducers.load(std::memory_order::seq_cst) == 0) {
       break;
     }
 
@@ -122,7 +122,7 @@ void writeGames(const string &databasePath, ProcessedQueue &input,
       continue;
     }
 
-    if (activeProcessors.load(memory_order_acquire) == 0) {
+    if (activeProcessors.load(std::memory_order::seq_cst) == 0) {
       break;
     }
 

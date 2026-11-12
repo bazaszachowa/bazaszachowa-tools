@@ -5,5 +5,5 @@ struct CompletionGuard {
 
   explicit CompletionGuard(std::atomic<unsigned int> &count) : active(count) {}
 
-  ~CompletionGuard() { active.fetch_sub(1, std::memory_order_release); }
+  ~CompletionGuard() { active.fetch_sub(1, std::memory_order::seq_cst); }
 };
