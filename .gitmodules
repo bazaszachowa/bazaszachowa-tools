@@ -4,3 +4,6 @@
 [submodule "cpp/chess-library"]
 	path = cpp/chess-library
 	url = https://github.com/Disservin/chess-library.git
+[submodule "cpp/concurrentqueue"]
+	path = cpp/concurrentqueue
+	url = https://github.com/cameron314/concurrentqueue.git

@@ -26,6 +26,6 @@ jobs:
           release: '14.4'
           run: |
             pkg update
-            pkg install -y cmake gcc mysql80-client
+            pkg install -y cmake gcc mysql80-client sqlite3
             cmake -S cpp -B cpp/build
             cmake --build cpp/build --parallel 2

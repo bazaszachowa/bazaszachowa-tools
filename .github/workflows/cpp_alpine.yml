@@ -29,7 +29,8 @@ jobs:
             build-base \
             cmake \
             mariadb-connector-c-dev \
-            mysql-client
+            mysql-client \
+            sqlite-dev
 
       - name: Configure
         run: cmake -S cpp -B cpp/build
