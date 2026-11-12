@@ -3,20 +3,15 @@ import threading
 import urllib.parse
 import tkinter as tk
 from tkinter import ttk, messagebox
+from collections import defaultdict
 
 import requests
 import chess
 
-from collections import defaultdict
-
 
 API = {
-    "search_player": (
-        "https://api.bazaszachowa.smallhost.pl/players/"
-    ),
-    "search_games": (
-        "https://api.bazaszachowa.smallhost.pl/games/opening/"
-    ),
+    "search_player": "https://api.bazaszachowa.smallhost.pl/players/",
+    "search_games": "https://api.bazaszachowa.smallhost.pl/games/opening/",
 }
 
 BOARD_SIZE = 400
@@ -24,18 +19,10 @@ SQUARE_SIZE = BOARD_SIZE // 8
 MAX_PLIES = 20
 
 CHESS_PIECES = {
-    "p": "♟",
-    "r": "♜",
-    "n": "♞",
-    "b": "♝",
-    "q": "♛",
-    "k": "♚",
-    "P": "♙",
-    "R": "♖",
-    "N": "♘",
-    "B": "♗",
-    "Q": "♕",
-    "K": "♔",
+    "p": "♟", "r": "♜", "n": "♞",
+    "b": "♝", "q": "♛", "k": "♚",
+    "P": "♙", "R": "♖", "N": "♘",
+    "B": "♗", "Q": "♕", "K": "♔",
 }
 
 LIGHT_SQUARE = "#f0d9b5"
@@ -43,66 +30,24 @@ DARK_SQUARE = "#b58863"
 SELECTED_SQUARE = "#f6f669"
 
 
-def decode_date_code(date_code):
-    """
-    Database date encoding:
-
-        0-364   standard zero-based day of year
-        365     February 29
-        366-377 month known, day unknown
-        378     month and day unknown
-
-    Returns (month, day), with None for unknown values.
-    """
-    date_code = int(date_code)
-
-    if 0 <= date_code <= 364:
-        import datetime
-
-        date = datetime.date(2001, 1, 1) + datetime.timedelta(
-            days=date_code
-        )
-        return date.month, date.day
-
-    if date_code == 365:
-        return 2, 29
-
-    if 366 <= date_code <= 377:
-        return date_code - 365, None
-
-    return None, None
-
-
 def parse_result(result):
-    """
-    Result encoding:
-
-        0   Black wins
-        1   Draw
-        2   White wins
-        255 Unknown
-
-    Also accepts PGN result strings.
-    """
+    """Return the winner: white, black, draw or unknown."""
     if result in (0, "0", "0-1"):
         return "black"
-
     if result in (1, "1", "1/2-1/2"):
         return "draw"
-
     if result in (2, "2", "1-0"):
         return "white"
-
     return "unknown"
 
 
 def make_move(move_data):
     """
-    API move format:
+    Supported formats:
         {"from": "e2", "to": "e4"}
         {"from": "e7", "to": "e8", "promotion": "q"}
-
-    Also accepts UCI strings.
+        "e2e4"
+        "e7e8q"
     """
     if isinstance(move_data, str):
         return chess.Move.from_uci(move_data)
@@ -124,17 +69,53 @@ def create_node():
         "draws": 0,
         "losses": 0,
         "unknown": 0,
-        "year_counts": defaultdict(int),
+        "yearly": defaultdict(lambda: [0, 0.0]),
         "san": None,
         "uci": None,
     }
+
+
+def linear_forecast(values):
+    """
+    Extrapolate the next value using a linear trend.
+
+    values is a list of yearly values, including zeroes for missing years.
+    """
+    if not values:
+        return 0.0
+
+    if len(values) == 1:
+        return float(values[-1])
+
+    n = len(values)
+
+    mean_x = (n - 1) / 2
+    mean_y = sum(values) / n
+
+    denominator = sum(
+        (x - mean_x) ** 2
+        for x in range(n)
+    )
+
+    if denominator == 0:
+        return float(values[-1])
+
+    slope = sum(
+        (x - mean_x) * (y - mean_y)
+        for x, y in enumerate(values)
+    ) / denominator
+
+    intercept = mean_y - slope * mean_x
+
+    return intercept + slope * n
 
 
 class ChessOpeningApp:
     def __init__(self, master):
         self.master = master
         self.master.title("Chess Opening Explorer")
-        self.master.geometry("1250x800")
+        self.master.geometry("1450x850")
+        self.master.minsize(1100, 700)
 
         self.session = requests.Session()
         self.session.headers.update({
@@ -142,22 +123,37 @@ class ChessOpeningApp:
         })
 
         self.games = []
+
         self.root_node = create_node()
         self.current_node = self.root_node
 
         self.board = chess.Board()
-        self.selected_square = None
         self.current_path = []
+        self.selected_square = None
 
-        self.tree_paths = {}
+        self.tree_moves = {}
         self.search_after_id = None
+        self.search_generation = 0
+
+        self.first_year = None
+        self.latest_year = None
+        self.next_year = None
 
         self.player_var = tk.StringVar()
         self.color_var = tk.StringVar(value="white")
         self.status_var = tk.StringVar(value="Search for a player.")
 
+        self.position_var = tk.StringVar(
+            value="Starting position"
+        )
+
+        self.details_var = tk.StringVar(
+            value="Select a possible next move to see its time series."
+        )
+
         self.create_widgets()
         self.draw_board()
+        self.populate_tree()
 
     # ---------------------------------------------------------
     # GUI
@@ -167,10 +163,9 @@ class ChessOpeningApp:
         top = ttk.Frame(self.master, padding=10)
         top.pack(fill=tk.X)
 
-        ttk.Label(
-            top,
-            text="Player:",
-        ).pack(side=tk.LEFT, padx=5)
+        ttk.Label(top, text="Player:").pack(
+            side=tk.LEFT, padx=5
+        )
 
         self.player_entry = ttk.Combobox(
             top,
@@ -183,10 +178,9 @@ class ChessOpeningApp:
             self.on_player_keyrelease,
         )
 
-        ttk.Label(
-            top,
-            text="Color:",
-        ).pack(side=tk.LEFT, padx=5)
+        ttk.Label(top, text="Color:").pack(
+            side=tk.LEFT, padx=5
+        )
 
         ttk.Radiobutton(
             top,
@@ -213,9 +207,14 @@ class ChessOpeningApp:
             self.master,
             orient=tk.HORIZONTAL,
         )
-        main.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        main.pack(
+            fill=tk.BOTH,
+            expand=True,
+            padx=10,
+            pady=5,
+        )
 
-        # Left side: chessboard and navigation.
+        # Left panel: board and navigation.
 
         left = ttk.Frame(main, padding=5)
         main.add(left, weight=1)
@@ -227,7 +226,10 @@ class ChessOpeningApp:
             highlightthickness=0,
         )
         self.canvas.pack(pady=5)
-        self.canvas.bind("<Button-1>", self.on_board_click)
+        self.canvas.bind(
+            "<Button-1>",
+            self.on_board_click,
+        )
 
         navigation = ttk.Frame(left)
         navigation.pack(fill=tk.X, pady=5)
@@ -246,25 +248,25 @@ class ChessOpeningApp:
 
         ttk.Button(
             navigation,
-            text="Reset board",
-            command=self.reset_board,
+            text="Play move",
+            command=self.play_selected_move,
         ).pack(side=tk.LEFT, padx=3)
 
-        self.position_label = ttk.Label(
+        ttk.Label(
             left,
-            text="Starting position",
+            textvariable=self.position_var,
             font=("Arial", 11, "bold"),
-        )
-        self.position_label.pack(pady=5)
+            wraplength=420,
+        ).pack(pady=5)
 
-        # Right side: opening tree and statistics.
+        # Right panel: only immediate next moves.
 
         right = ttk.Frame(main, padding=5)
         main.add(right, weight=2)
 
         ttk.Label(
             right,
-            text="Opening tree",
+            text="Possible next moves",
             font=("Arial", 12, "bold"),
         ).pack(anchor=tk.W, pady=5)
 
@@ -275,13 +277,16 @@ class ChessOpeningApp:
             "losses",
             "unknown",
             "score",
+            "expected_score",
+            "forecast_games",
+            "forecast_points",
         )
 
         self.tree = ttk.Treeview(
             right,
             columns=columns,
             show="tree headings",
-            height=25,
+            height=17,
         )
 
         self.tree.heading("#0", text="Move")
@@ -291,14 +296,30 @@ class ChessOpeningApp:
         self.tree.heading("losses", text="Losses")
         self.tree.heading("unknown", text="?")
         self.tree.heading("score", text="Score")
+        self.tree.heading("expected_score", text="Expected %")
+        self.tree.heading(
+            "forecast_games",
+            text=f"Predicted {self.next_year or 'Next'} games",
+        )
+        self.tree.heading(
+            "forecast_points",
+            text=f"Predicted {self.next_year or 'Next'} points",
+        )
 
-        self.tree.column("#0", width=230)
+        self.tree.column("#0", width=100)
         self.tree.column("games", width=65, anchor=tk.CENTER)
         self.tree.column("wins", width=55, anchor=tk.CENTER)
         self.tree.column("draws", width=55, anchor=tk.CENTER)
         self.tree.column("losses", width=55, anchor=tk.CENTER)
         self.tree.column("unknown", width=55, anchor=tk.CENTER)
         self.tree.column("score", width=70, anchor=tk.CENTER)
+        self.tree.column("expected_score", width=100, anchor=tk.CENTER)
+        self.tree.column(
+            "forecast_games", width=100, anchor=tk.CENTER
+        )
+        self.tree.column(
+            "forecast_points", width=105, anchor=tk.CENTER
+        )
 
         scrollbar = ttk.Scrollbar(
             right,
@@ -307,15 +328,41 @@ class ChessOpeningApp:
         )
         self.tree.configure(yscrollcommand=scrollbar.set)
 
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.tree.pack(
+            side=tk.LEFT,
+            fill=tk.BOTH,
+            expand=True,
+        )
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.tree.bind(
             "<<TreeviewSelect>>",
             self.on_tree_select,
         )
+        self.tree.bind(
+            "<Double-1>",
+            lambda event: self.play_selected_move(),
+        )
 
-        # Bottom status.
+        # Selected move time series.
+
+        details_frame = ttk.LabelFrame(
+            right,
+            text="Selected move — yearly time series and forecast",
+            padding=8,
+        )
+        details_frame.pack(
+            fill=tk.BOTH,
+            expand=True,
+            pady=10,
+        )
+
+        ttk.Label(
+            details_frame,
+            textvariable=self.details_var,
+            justify=tk.LEFT,
+            font=("Consolas", 10),
+        ).pack(anchor=tk.W)
 
         ttk.Label(
             self.master,
@@ -335,8 +382,12 @@ class ChessOpeningApp:
         ):
             return
 
+        self.search_generation += 1
+        generation = self.search_generation
+
         if self.search_after_id:
             self.master.after_cancel(self.search_after_id)
+            self.search_after_id = None
 
         name = self.player_var.get().strip()
 
@@ -346,24 +397,30 @@ class ChessOpeningApp:
 
         self.search_after_id = self.master.after(
             400,
-            lambda: self.search_players(name),
+            lambda: self.search_players(name, generation),
         )
 
-    def search_players(self, name):
+    def search_players(self, name, generation):
         def worker():
             try:
                 url = API["search_player"] + urllib.parse.quote(name)
-                response = self.session.get(url, timeout=20)
+
+                response = self.session.get(
+                    url,
+                    timeout=20,
+                )
                 response.raise_for_status()
 
-                data = response.json()
+                players = response.json()
 
-                if not isinstance(data, list):
-                    data = []
+                if not isinstance(players, list):
+                    players = []
 
                 self.master.after(
                     0,
-                    lambda: self.update_player_suggestions(data),
+                    lambda: self.update_player_suggestions(
+                        players, name, generation
+                    ),
                 )
 
             except Exception as error:
@@ -375,14 +432,25 @@ class ChessOpeningApp:
                         f"Player search failed: {msg}"
                     ),
                 )
+
         threading.Thread(
             target=worker,
             daemon=True,
         ).start()
 
-    def update_player_suggestions(self, players):
+    def update_player_suggestions(
+        self, players, requested_name, generation
+    ):
+        if generation != self.search_generation:
+            return
+
+        if self.player_var.get().strip() != requested_name:
+            return
+
         self.player_entry["values"] = players
-        self.player_entry.event_generate("<Down>")
+
+        if players:
+            self.player_entry.event_generate("<Down>")
 
     # ---------------------------------------------------------
     # Fetch games
@@ -411,23 +479,32 @@ class ChessOpeningApp:
                     + urllib.parse.quote(color)
                 )
 
-                response = self.session.get(url, timeout=120)
+                response = self.session.get(
+                    url,
+                    timeout=120,
+                )
                 response.raise_for_status()
 
                 games = response.json()
 
                 if not isinstance(games, list):
-                    raise ValueError("Unexpected API response.")
+                    raise ValueError(
+                        "Unexpected API response: expected a list."
+                    )
 
                 self.master.after(
                     0,
-                    lambda: self.on_games_loaded(games, name, color),
+                    lambda: self.on_games_loaded(
+                        games, name, color
+                    ),
                 )
 
             except Exception as error:
+                error_message = str(error)
+
                 self.master.after(
                     0,
-                    lambda: self.on_games_error(error),
+                    lambda msg=error_message: self.on_games_error(msg),
                 )
 
         threading.Thread(
@@ -437,7 +514,6 @@ class ChessOpeningApp:
 
     def on_games_error(self, error):
         self.submit_button.config(state=tk.NORMAL)
-
         self.status_var.set("Failed to load games.")
 
         messagebox.showerror(
@@ -463,39 +539,32 @@ class ChessOpeningApp:
         self.board = chess.Board()
         self.current_path = []
         self.current_node = self.root_node
+        self.selected_square = None
 
         self.draw_board()
+        self.update_position_label()
         self.populate_tree()
 
         self.status_var.set(
-            f"{name} ({color}): {len(games)} games loaded."
+            f"{name} ({color}): {len(games)} games loaded. "
+            f"Forecast year: {self.next_year or 'unknown'}."
         )
 
     # ---------------------------------------------------------
-    # Date and result handling
+    # Result and year handling
     # ---------------------------------------------------------
 
     @staticmethod
     def get_game_year(game):
-        return game.get("Year", game.get("year"))
+        value = game.get("Year", game.get("year"))
 
-    @staticmethod
-    def get_game_date(game):
-        """
-        Accept either a DateCode field or separate Month/Day fields.
-        """
-        date_code = game.get(
-            "DateCode",
-            game.get("date_code"),
-        )
+        if value is None:
+            return None
 
-        if date_code is not None:
-            return decode_date_code(date_code)
-
-        month = game.get("Month", game.get("month"))
-        day = game.get("Day", game.get("day"))
-
-        return month, day
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def get_player_result(result, color):
@@ -513,7 +582,7 @@ class ChessOpeningApp:
         return "loss"
 
     # ---------------------------------------------------------
-    # Opening tree
+    # Opening tree and yearly time series
     # ---------------------------------------------------------
 
     def update_node_stats(self, node, result, year):
@@ -521,129 +590,156 @@ class ChessOpeningApp:
 
         if result == "win":
             node["wins"] += 1
+            points = 1.0
         elif result == "draw":
             node["draws"] += 1
+            points = 0.5
         elif result == "loss":
             node["losses"] += 1
+            points = 0.0
         else:
             node["unknown"] += 1
+            points = 0.0
 
         if year is not None:
-            node["year_counts"][int(year)] += 1
+            yearly = node["yearly"][year]
+            yearly[0] += 1
+            yearly[1] += points
 
     def build_opening_tree(self, games, color):
         self.root_node = create_node()
         self.current_node = self.root_node
 
+        years = [
+            year
+            for game in games
+            if (year := self.get_game_year(game)) is not None
+        ]
+
+        self.first_year = min(years) if years else None
+        self.latest_year = max(years) if years else None
+        self.next_year = (
+            self.latest_year + 1
+            if self.latest_year is not None
+            else None
+        )
+
         for game in games:
-            try:
-                moves = game.get("moves", [])
+            moves = game.get("moves", [])
 
-                if not moves:
-                    continue
-
-                result_value = game.get(
-                    "Result",
-                    game.get("result"),
-                )
-
-                result = self.get_player_result(
-                    result_value,
-                    color,
-                )
-
-                year = self.get_game_year(game)
-
-                board = chess.Board()
-                node = self.root_node
-
-                self.update_node_stats(node, result, year)
-
-                for move_data in moves[:MAX_PLIES]:
-                    move = make_move(move_data)
-
-                    if move not in board.legal_moves:
-                        break
-
-                    san = board.san(move)
-                    uci = move.uci()
-
-                    if uci not in node["children"]:
-                        child = create_node()
-                        child["san"] = san
-                        child["uci"] = uci
-
-                        node["children"][uci] = child
-
-                    node = node["children"][uci]
-
-                    board.push(move)
-
-                    self.update_node_stats(
-                        node,
-                        result,
-                        year,
-                    )
-
-            except (ValueError, KeyError, TypeError):
+            if not isinstance(moves, list) or not moves:
                 continue
 
-    # ---------------------------------------------------------
-    # Populate tree widget
-    # ---------------------------------------------------------
-
-    def populate_tree(self):
-        self.tree.delete(*self.tree.get_children())
-        self.tree_paths.clear()
-
-        root_stats = self.get_stats_text(self.root_node)
-
-        root_id = self.tree.insert(
-            "",
-            tk.END,
-            text="Starting position",
-            values=root_stats,
-            open=True,
-        )
-
-        self.tree_paths[root_id] = []
-
-        self.insert_children(
-            root_id,
-            self.root_node,
-            [],
-        )
-
-        self.tree.selection_set(root_id)
-
-    def insert_children(self, parent_id, node, path):
-        children = sorted(
-            node["children"].values(),
-            key=lambda child: child["games"],
-            reverse=True,
-        )
-
-        for child in children:
-            child_path = path + [child["uci"]]
-
-            item_id = self.tree.insert(
-                parent_id,
-                tk.END,
-                text=child["san"],
-                values=self.get_stats_text(child),
-                open=False,
+            result_value = game.get(
+                "Result",
+                game.get("result"),
             )
 
-            self.tree_paths[item_id] = child_path
-
-            self.insert_children(
-                item_id,
-                child,
-                child_path,
+            result = self.get_player_result(
+                result_value,
+                color,
             )
+
+            year = self.get_game_year(game)
+
+            board = chess.Board()
+            node = self.root_node
+
+            self.update_node_stats(node, result, year)
+
+            for move_data in moves[:MAX_PLIES]:
+                try:
+                    move = make_move(move_data)
+                except (ValueError, KeyError, TypeError):
+                    break
+
+                if move not in board.legal_moves:
+                    break
+
+                san = board.san(move)
+                uci = move.uci()
+
+                if uci not in node["children"]:
+                    child = create_node()
+                    child["san"] = san
+                    child["uci"] = uci
+                    node["children"][uci] = child
+
+                node = node["children"][uci]
+                board.push(move)
+
+                self.update_node_stats(
+                    node,
+                    result,
+                    year,
+                )
+
+    # ---------------------------------------------------------
+    # Forecasting
+    # ---------------------------------------------------------
+
+    def get_time_series(self, node):
+        """
+        Return:
+            [(year, games, points), ...]
+
+        Missing years are represented by zeroes.
+        """
+        if self.first_year is None or self.latest_year is None:
+            return []
+
+        result = []
+
+        for year in range(self.first_year, self.latest_year + 1):
+            games, points = node["yearly"].get(
+                year,
+                [0, 0.0],
+            )
+
+            result.append(
+                (year, games, points)
+            )
+
+        return result
+
+    def forecast_move(self, node):
+        """
+        Forecast next year's game count and points independently.
+        """
+        series = self.get_time_series(node)
+
+        if not series:
+            return 0.0, 0.0
+
+        game_values = [
+            games for _, games, _ in series
+        ]
+
+        point_values = [
+            points for _, _, points in series
+        ]
+
+        predicted_games = linear_forecast(game_values)
+        predicted_points = linear_forecast(point_values)
+
+        # Forecasts cannot be negative.
+        predicted_games = max(0.0, predicted_games)
+        predicted_points = max(0.0, predicted_points)
+
+        # Points cannot exceed the predicted number of games.
+        predicted_points = min(
+            predicted_points,
+            predicted_games,
+        )
+
+        return predicted_games, predicted_points
+
+    # ---------------------------------------------------------
+    # Display only immediate next moves
+    # ---------------------------------------------------------
 
     @staticmethod
-    def get_stats_text(node):
+    def get_stats_text(node, forecast_games, forecast_points):
         games = node["games"]
         wins = node["wins"]
         draws = node["draws"]
@@ -653,7 +749,7 @@ class ChessOpeningApp:
         decided = wins + draws + losses
 
         score = (
-            (wins + draws * 0.5) / decided * 100
+            (wins + 0.5 * draws) / decided * 100
             if decided else 0.0
         )
 
@@ -664,11 +760,61 @@ class ChessOpeningApp:
             losses,
             unknown,
             f"{score:.1f}%",
+            f"{(forecast_points/forecast_games * 100):.1f}" if forecast_games else "0.0",
+            f"{forecast_games:.1f}",
+            f"{forecast_points:.1f}",
         )
 
-    # ---------------------------------------------------------
-    # Tree navigation
-    # ---------------------------------------------------------
+    def populate_tree(self):
+        """
+        Display only the direct children of the current position.
+        No recursive tree expansion.
+        """
+        self.tree.delete(*self.tree.get_children())
+        self.tree_moves.clear()
+
+        children = sorted(
+            self.current_node["children"].values(),
+            key=lambda child: child["games"],
+            reverse=True,
+        )
+
+        for child in children:
+            forecast_games, forecast_points = self.forecast_move(
+                child
+            )
+
+            item_id = self.tree.insert(
+                "",
+                tk.END,
+                text=child["san"],
+                values=self.get_stats_text(
+                    child,
+                    forecast_games,
+                    forecast_points,
+                ),
+            )
+
+            self.tree_moves[item_id] = child["uci"]
+
+        year_text = (
+            str(self.next_year)
+            if self.next_year is not None
+            else "unknown"
+        )
+
+        self.tree.heading(
+            "forecast_games",
+            text=f"Predicted {year_text} games",
+        )
+        self.tree.heading(
+            "forecast_points",
+            text=f"Predicted {year_text} points",
+        )
+
+        self.details_var.set(
+            "Select a possible next move to see its yearly time series."
+        )
 
     def on_tree_select(self, event):
         selection = self.tree.selection()
@@ -677,9 +823,58 @@ class ChessOpeningApp:
             return
 
         item_id = selection[0]
-        path = self.tree_paths.get(item_id, [])
+        uci = self.tree_moves.get(item_id)
 
-        self.set_position(path)
+        if uci is None:
+            return
+
+        child = self.current_node["children"][uci]
+        self.show_move_details(child)
+
+    def show_move_details(self, node):
+        series = self.get_time_series(node)
+        predicted_games, predicted_points = self.forecast_move(node)
+
+        lines = [
+            f"Move: {node['san']} ({node['uci']})",
+            "",
+            "Year       Games       Points",
+            "-----------------------------",
+        ]
+
+        if series:
+            for year, games, points in series:
+                lines.append(
+                    f"{year:<10}{games:<12}{points:.1f}"
+                )
+        else:
+            lines.append("No usable year information.")
+
+        lines.extend([
+            "",
+            f"Forecast for {self.next_year or 'next year'}:",
+            f"Games:  {predicted_games:.1f}",
+            f"Points: {predicted_points:.1f}",
+        ])
+
+        if predicted_games > 0:
+            expected_score = (
+                predicted_points / predicted_games * 100
+            )
+            lines.append(
+                f"Expected score: {expected_score:.1f}%"
+            )
+
+        lines.extend([
+            "",
+            "Points: win = 1, draw = 0.5, loss = 0.",
+        ])
+
+        self.details_var.set("\n".join(lines))
+
+    # ---------------------------------------------------------
+    # Board navigation
+    # ---------------------------------------------------------
 
     def set_position(self, path):
         self.board = chess.Board()
@@ -699,6 +894,7 @@ class ChessOpeningApp:
 
         self.draw_board()
         self.update_position_label()
+        self.populate_tree()
 
     def get_node(self, path):
         node = self.root_node
@@ -713,50 +909,44 @@ class ChessOpeningApp:
 
     def update_position_label(self):
         if not self.current_path:
-            self.position_label.config(
-                text="Starting position"
-            )
+            self.position_var.set("Starting position")
             return
 
-        self.position_label.config(
-            text=" ".join(
-                chess.Board().variation_san(
-                    [
-                        chess.Move.from_uci(uci)
-                        for uci in self.current_path
-                    ]
-                )
+        moves = [
+            chess.Move.from_uci(uci)
+            for uci in self.current_path
+        ]
+
+        self.position_var.set(
+            " ".join(
+                chess.Board().variation_san(moves)
             )
+        )
+
+    def play_selected_move(self):
+        selection = self.tree.selection()
+
+        if not selection:
+            return
+
+        uci = self.tree_moves.get(selection[0])
+
+        if uci is None:
+            return
+
+        self.set_position(
+            self.current_path + [uci]
         )
 
     def go_start(self):
         self.set_position([])
 
-        root_id = self.tree.get_children()
-
-        if root_id:
-            self.tree.selection_set(root_id[0])
-
     def undo_move(self):
-        if not self.current_path:
-            return
-
-        self.set_position(self.current_path[:-1])
-
-        self.select_tree_path(self.current_path)
-
-    def reset_board(self):
-        self.go_start()
-
-    def select_tree_path(self, path):
-        for item_id, item_path in self.tree_paths.items():
-            if item_path == path:
-                self.tree.selection_set(item_id)
-                self.tree.see(item_id)
-                break
+        if self.current_path:
+            self.set_position(self.current_path[:-1])
 
     # ---------------------------------------------------------
-    # Chessboard
+    # Chessboard drawing and interaction
     # ---------------------------------------------------------
 
     def draw_board(self):
@@ -817,11 +1007,12 @@ class ChessOpeningApp:
             square,
         )
 
-        # Handle promotion by choosing a queen.
+        piece = self.board.piece_at(self.selected_square)
+
+        # Automatically promote to queen.
         if (
-            self.board.piece_at(self.selected_square)
-            and self.board.piece_at(self.selected_square).piece_type
-                == chess.PAWN
+            piece
+            and piece.piece_type == chess.PAWN
             and chess.square_rank(square) in (0, 7)
         ):
             move.promotion = chess.QUEEN
@@ -834,14 +1025,14 @@ class ChessOpeningApp:
 
         uci = move.uci()
 
+        # Only allow moves present in the downloaded games.
         if uci not in self.current_node["children"]:
             self.draw_board()
             return
 
-        new_path = self.current_path + [uci]
-
-        self.set_position(new_path)
-        self.select_tree_path(new_path)
+        self.set_position(
+            self.current_path + [uci]
+        )
 
 
 def main():
