@@ -10,7 +10,7 @@
 namespace chessdb {
 namespace {
 
-constexpr int SCHEMA_VERSION = 6;
+constexpr int SCHEMA_VERSION = 7;
 
 class Statement {
 public:
@@ -69,10 +69,10 @@ void finishMigration(sqlite3 *db, int version) {
   sqlite3_bind_int(migration.get(), 1, version);
   checkSQLite(sqlite3_step(migration.get()), db);
 
-  executeSql(db, version == 6   ? "PRAGMA user_version = 6; COMMIT;"
-                 : version == 5 ? "PRAGMA user_version = 5; COMMIT;"
-                 : version == 4 ? "PRAGMA user_version = 4; COMMIT;"
-                                : "PRAGMA user_version = 3; COMMIT;");
+  const std::string sql =
+      "PRAGMA user_version = " + std::to_string(version) + "; COMMIT;";
+
+  executeSql(db, sql.c_str());
 }
 
 void rollback(sqlite3 *db) noexcept {
@@ -97,7 +97,7 @@ void insertPositionGame(sqlite3 *db, sqlite3_stmt *stmt, sqlite3_int64 hash,
   sqlite3_clear_bindings(stmt);
 }
 
-void createVersion6Schema(sqlite3 *db) {
+void createVersion7Schema(sqlite3 *db) {
   beginMigration(db);
 
   try {
@@ -116,9 +116,13 @@ void createVersion6Schema(sqlite3 *db) {
                 zobrist INTEGER NOT NULL,
                 PRIMARY KEY (game_id, zobrist)
             ) WITHOUT ROWID;
+
+            CREATE INDEX idx_games_white_id ON games(white_id);
+            CREATE INDEX idx_games_black_id ON games(black_id);
+            CREATE INDEX idx_games_year ON games(year);
         )");
 
-    finishMigration(db, 6);
+    finishMigration(db, 7);
   } catch (...) {
     rollback(db);
     throw;
@@ -383,6 +387,23 @@ void migrateVersion5To6(sqlite3 *db) {
   }
 }
 
+void migrateVersion6To7(sqlite3 *db) {
+  beginMigration(db);
+
+  try {
+    executeSql(db, R"(
+        CREATE INDEX idx_games_white_id ON games(white_id);
+        CREATE INDEX idx_games_black_id ON games(black_id);
+        CREATE INDEX idx_games_year ON games(year);
+    )");
+
+    finishMigration(db, 7);
+  } catch (...) {
+    rollback(db);
+    throw;
+  }
+}
+
 } // namespace
 
 SQLiteDatabase::SQLiteDatabase(const std::string &filename, bool readOnly) {
@@ -453,7 +474,7 @@ void SQLiteDatabase::initialize() {
 
   // A new database is created directly at the latest schema.
   if (version == 0) {
-    createVersion6Schema(db_);
+    createVersion7Schema(db_);
   } else {
     // Upgrade one version at a time.
     while (version < SCHEMA_VERSION) {
@@ -473,9 +494,15 @@ void SQLiteDatabase::initialize() {
         version = 6;
         break;
 
+      case 6:
+        migrateVersion6To7(db_);
+        version = 7;
+        break;
+
       default:
-        throw std::runtime_error("Unsupported SQLite schema version. "
-                                 "Supported existing versions are 3, 4 and 5.");
+        throw std::runtime_error(
+            "Unsupported SQLite schema version. "
+            "Supported existing versions are 3, 4, 5 and 6.");
       }
     }
   }
