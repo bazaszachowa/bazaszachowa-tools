@@ -23,6 +23,13 @@ dependencies = [
 dev = ["mypy>=2.3,<3", "mypy_extensions>=1.1,<2", "ruff>=0.16,<1"]
 
 curl_cffi = ["curl_cffi>=0.16,<1"]
+analysis = [
+    "matplotlib",
+    "numpy",
+    "keras",
+    "tensorflow",
+    "tensorflow[and-cuda]>=2.21.0",
+]
 
 [tool.ruff]
 line-length = 88
@@ -77,4 +84,4 @@ warn_unused_ignores = true
 
 ignore_missing_imports = true
 
-exclude = ['^chess_scrappers/']
+exclude = ['^chess_scrappers/', '^python/chess_scrappers/']
