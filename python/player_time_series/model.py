@@ -1,5 +1,8 @@
 
+import random
+
 import numpy as np
+import tensorflow as tf
 import keras
 from keras import layers
 
@@ -15,6 +18,7 @@ def encode_yearly_data(data):
 
     for count, points in data:
         rate = points / count if count else 0.0
+
         encoded.append([
             np.log1p(count),
             rate,
@@ -65,57 +69,131 @@ def build_model():
     return model
 
 
-def make_samples(series, min_history=1):
+def make_samples(series, keys, min_history=1):
     """
-    Creates variable-length sequences:
+    Generates:
         previous years -> next year's [count, points]
-    """
-    samples = []
 
-    for yearly_data in series.values():
+    Samples are yielded one at a time to avoid storing all
+    encoded sequences in memory.
+    """
+    for key in keys:
+        yearly_data = series[key]
         values = [value for _, value in yearly_data]
 
         for target_index in range(min_history, len(values)):
             history = encode_yearly_data(values[:target_index])
             target = encode_target(*values[target_index])
 
-            samples.append((history, target))
-
-    return samples
+            yield history, target
 
 
-def pad_samples(samples):
-    max_length = max(len(history) for history, _ in samples)
-
-    X = np.full(
-        (len(samples), max_length, 2),
-        PADDING_VALUE,
-        dtype=np.float32,
+def make_dataset(series, keys, min_history, batch_size, shuffle):
+    output_signature = (
+        tf.TensorSpec(shape=(None, 2), dtype=tf.float32),
+        tf.TensorSpec(shape=(2,), dtype=tf.float32),
     )
-    y = np.asarray([target for _, target in samples], dtype=np.float32)
 
-    for index, (history, _) in enumerate(samples):
-        X[index, :len(history)] = history
+    dataset = tf.data.Dataset.from_generator(
+        lambda: make_samples(series, keys, min_history),
+        output_signature=output_signature,
+    )
 
-    return X, y
+    if shuffle:
+        dataset = dataset.shuffle(
+            buffer_size=10000,
+            reshuffle_each_iteration=True,
+        )
 
-def train_model(series, min_history=1, epochs=30, batch_size=128):
-    samples = make_samples(series, min_history)
+    dataset = dataset.padded_batch(
+        batch_size,
+        padded_shapes=(
+            [None, 2],
+            [2],
+        ),
+        padding_values=(
+            tf.constant(PADDING_VALUE, dtype=tf.float32),
+            tf.constant(0.0, dtype=tf.float32),
+        ),
+        drop_remainder=False,
+    )
 
-    if len(samples) < 2:
-        raise ValueError("Not enough training samples")
+    return dataset.prefetch(tf.data.AUTOTUNE)
 
-    X, y = pad_samples(samples)
+
+def count_samples(series, keys, min_history):
+    return sum(
+        max(0, len(series[key]) - min_history)
+        for key in keys
+    )
+
+
+def train_model(
+    series,
+    min_history=1,
+    epochs=30,
+    batch_size=128,
+    validation_fraction=0.2,
+    seed=42,
+):
+    if not series:
+        raise ValueError("No player series provided")
+
+    keys = list(series.keys())
+    random.Random(seed).shuffle(keys)
+
+    if len(keys) < 2:
+        raise ValueError("At least two player-role series are required")
+
+    split_index = max(
+        1,
+        min(
+            len(keys) - 1,
+            int(len(keys) * (1.0 - validation_fraction)),
+        ),
+    )
+
+    train_keys = keys[:split_index]
+    validation_keys = keys[split_index:]
+
+    train_count = count_samples(series, train_keys, min_history)
+    validation_count = count_samples(
+        series,
+        validation_keys,
+        min_history,
+    )
+
+    if train_count < 1 or validation_count < 1:
+        raise ValueError(
+            "Not enough training or validation samples. "
+            "Try lowering min_history."
+        )
+
+    print(f"Training samples: {train_count}")
+    print(f"Validation samples: {validation_count}")
+
+    train_dataset = make_dataset(
+        series,
+        train_keys,
+        min_history,
+        batch_size,
+        shuffle=True,
+    )
+
+    validation_dataset = make_dataset(
+        series,
+        validation_keys,
+        min_history,
+        batch_size,
+        shuffle=False,
+    )
 
     model = build_model()
 
     model.fit(
-        X,
-        y,
+        train_dataset,
+        validation_data=validation_dataset,
         epochs=epochs,
-        batch_size=batch_size,
-        validation_split=0.2,
-        shuffle=True,
         callbacks=[
             keras.callbacks.EarlyStopping(
                 monitor="val_loss",
