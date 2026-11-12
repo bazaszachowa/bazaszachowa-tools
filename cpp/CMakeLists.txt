@@ -67,6 +67,7 @@ include_directories(
 )
 
 find_package(SQLite3 REQUIRED)
+find_package(Threads REQUIRED)
 
 add_executable(pgn2sql ${SOURCE_DIR}/pgn2sql.cpp)
 add_executable(lichess_classify ${SOURCE_DIR}/lichess_classify.cpp)
@@ -76,8 +77,11 @@ add_executable(extract_positions ${SOURCE_DIR}/extract_positions/main.cpp)
 
 target_link_libraries(lichess_classify PRIVATE ${MYSQL_LIB} pthread)
 target_link_libraries(remote2pgn PRIVATE ${MYSQL_LIB} pthread)
-# target_link_libraries(extract_positions PRIVATE ${MYSQL_LIB} pthread)
-target_link_libraries(extract_positions PRIVATE ${MYSQL_LIB} SQLite::SQLite3)
+target_link_libraries(extract_positions PRIVATE
+    ${MYSQL_LIB}
+    SQLite::SQLite3
+    Threads::Threads
+)
 
 target_sources(extract_positions PRIVATE
     ${SOURCE_DIR}/extract_positions/main.cpp
