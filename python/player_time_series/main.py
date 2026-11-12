@@ -1,13 +1,11 @@
-
 import argparse
 import sqlite3
-from pathlib import Path
 
 from .dataset import load_player_series
-from .model import train_model, predict_next_year
+from .model import predict_next_year, train_model
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Train a chess player yearly time-series model."
     )
@@ -76,10 +74,7 @@ def main():
         print(f"Role: {args.role}")
         print(f"History: {history}")
         print(f"Predicted year: {last_year + 1}")
-        print(
-            "Predicted [games, points]: "
-            f"[{prediction[0]:.2f}, {prediction[1]:.2f}]"
-        )
+        print(f"Predicted [games, points]: [{prediction[0]:.2f}, {prediction[1]:.2f}]")
 
 
 if __name__ == "__main__":

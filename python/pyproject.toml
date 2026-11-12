@@ -84,4 +84,4 @@ warn_unused_ignores = true
 
 ignore_missing_imports = true
 
-exclude = ['^chess_scrappers/']
+exclude = ['^chess_scrappers/', '^python/chess_scrappers/']

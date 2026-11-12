@@ -1,17 +1,15 @@
-
 import sqlite3
 
 from player_time_series import (
     load_player_series,
-    train_model,
     predict_next_year,
+    train_model,
 )
-
 
 DATABASE = "all_games.sqlite"
 
 
-def main():
+def main() -> None:
     with sqlite3.connect(DATABASE) as connection:
         series = load_player_series(connection)
 

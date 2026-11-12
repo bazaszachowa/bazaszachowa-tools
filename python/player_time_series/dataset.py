@@ -1,9 +1,10 @@
-
 import sqlite3
 from collections import defaultdict
 
 
-def load_player_series(connection: sqlite3.Connection):
+def load_player_series(
+    connection: sqlite3.Connection,
+) -> dict[tuple[int, str], list[tuple[int, list[float]]]]:
     """
     Returns:
         {
@@ -52,7 +53,7 @@ def load_player_series(connection: sqlite3.Connection):
         ORDER BY player_id, role, year
     """
 
-    series = defaultdict(dict)
+    series: defaultdict[tuple[int, str], dict[int, list[float]]] = defaultdict(dict)
 
     for player_id, role, year, count, points in connection.execute(query):
         series[(player_id, role)][year] = [
@@ -68,7 +69,4 @@ def load_player_series(connection: sqlite3.Connection):
         for year in range(first_year, last_year + 1):
             yearly_data.setdefault(year, [0, 0.0])
 
-    return {
-        key: sorted(values.items())
-        for key, values in series.items()
-    }
+    return {key: sorted(values.items()) for key, values in series.items()}

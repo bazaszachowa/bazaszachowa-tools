@@ -1,9 +1,8 @@
-
 from .dataset import load_player_series
 from .model import (
     build_model,
-    train_model,
     predict_next_year,
+    train_model,
 )
 
 __all__ = [

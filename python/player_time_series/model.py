@@ -1,16 +1,15 @@
-
 import random
+from collections.abc import Generator
 
+import keras
 import numpy as np
 import tensorflow as tf
-import keras
 from keras import layers
-
 
 PADDING_VALUE = -999.0
 
 
-def encode_yearly_data(data):
+def encode_yearly_data(data: list[tuple[int, float]]) -> np.ndarray:
     """
     [count, points] -> [log1p(count), scoring_rate]
     """
@@ -19,24 +18,29 @@ def encode_yearly_data(data):
     for count, points in data:
         rate = points / count if count else 0.0
 
-        encoded.append([
-            np.log1p(count),
-            rate,
-        ])
+        encoded.append(
+            [
+                np.log1p(count),
+                rate,
+            ]
+        )
 
     return np.asarray(encoded, dtype=np.float32)
 
 
-def encode_target(count, points):
+def encode_target(count: int, points: float) -> np.ndarray:
     rate = points / count if count else 0.0
 
-    return np.asarray([
-        np.log1p(count),
-        rate,
-    ], dtype=np.float32)
+    return np.asarray(
+        [
+            np.log1p(count),
+            rate,
+        ],
+        dtype=np.float32,
+    )
 
 
-def decode_prediction(prediction):
+def decode_prediction(prediction: np.ndarray) -> list[float]:
     count = max(0.0, np.expm1(prediction[0]))
     rate = np.clip(prediction[1], 0.0, 1.0)
 
@@ -46,7 +50,7 @@ def decode_prediction(prediction):
     ]
 
 
-def build_model():
+def build_model() -> keras.Model:
     inputs = keras.Input(shape=(None, 2))
 
     x = layers.Masking(mask_value=PADDING_VALUE)(inputs)
@@ -69,7 +73,11 @@ def build_model():
     return model
 
 
-def make_samples(series, keys, min_history=1):
+def make_samples(
+    series: dict[tuple[int, str], list[tuple[int, list[float]]]],
+    keys: list[tuple[int, str]],
+    min_history: int = 1,
+) -> Generator[tuple[np.ndarray, np.ndarray], None, None]:
     """
     Generates:
         previous years -> next year's [count, points]
@@ -82,13 +90,24 @@ def make_samples(series, keys, min_history=1):
         values = [value for _, value in yearly_data]
 
         for target_index in range(min_history, len(values)):
-            history = encode_yearly_data(values[:target_index])
-            target = encode_target(*values[target_index])
+            history: np.ndarray = encode_yearly_data(
+                [(int(value[0]), float(value[1])) for value in values[:target_index]]
+            )
 
+            target: np.ndarray = encode_target(
+                int(values[target_index][0]),
+                float(values[target_index][1]),
+            )
             yield history, target
 
 
-def make_dataset(series, keys, min_history, batch_size, shuffle):
+def make_dataset(
+    series: dict[tuple[int, str], list[tuple[int, list[float]]]],
+    keys: list[tuple[int, str]],
+    min_history: int,
+    batch_size: int,
+    shuffle: bool,
+) -> tf.data.Dataset:
     output_signature = (
         tf.TensorSpec(shape=(None, 2), dtype=tf.float32),
         tf.TensorSpec(shape=(2,), dtype=tf.float32),
@@ -121,21 +140,22 @@ def make_dataset(series, keys, min_history, batch_size, shuffle):
     return dataset.prefetch(tf.data.AUTOTUNE)
 
 
-def count_samples(series, keys, min_history):
-    return sum(
-        max(0, len(series[key]) - min_history)
-        for key in keys
-    )
+def count_samples(
+    series: dict[tuple[int, str], list[tuple[int, list[float]]]],
+    keys: list[tuple[int, str]],
+    min_history: int,
+) -> int:
+    return sum(max(0, len(series[key]) - min_history) for key in keys)
 
 
 def train_model(
-    series,
-    min_history=1,
-    epochs=30,
-    batch_size=128,
-    validation_fraction=0.2,
-    seed=42,
-):
+    series: dict[tuple[int, str], list[tuple[int, list[float]]]],
+    min_history: int = 1,
+    epochs: int = 30,
+    batch_size: int = 128,
+    validation_fraction: float = 0.2,
+    seed: int = 42,
+) -> keras.Model:
     if not series:
         raise ValueError("No player series provided")
 
@@ -165,8 +185,7 @@ def train_model(
 
     if train_count < 1 or validation_count < 1:
         raise ValueError(
-            "Not enough training or validation samples. "
-            "Try lowering min_history."
+            "Not enough training or validation samples. Try lowering min_history."
         )
 
     print(f"Training samples: {train_count}")
@@ -206,9 +225,11 @@ def train_model(
     return model
 
 
-def predict_next_year(model, yearly_data):
+def predict_next_year(
+    model: keras.Model, yearly_data: list[tuple[int, list[float]]]
+) -> list[float]:
     history = encode_yearly_data(
-        [value for _, value in yearly_data]
+        [(int(value[0]), float(value[1])) for _, value in yearly_data]
     )
 
     X = history[np.newaxis, :, :]
