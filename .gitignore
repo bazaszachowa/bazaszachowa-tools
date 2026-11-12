@@ -5,3 +5,4 @@ python/repeatable_tasks/downloaded_zips/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.keras
