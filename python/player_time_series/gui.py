@@ -1,12 +1,16 @@
 
+import argparse
 import threading
 import urllib.parse
 import tkinter as tk
 from tkinter import ttk, messagebox
 from collections import defaultdict
 
+import keras
 import requests
 import chess
+
+from .model import predict_next_year
 
 
 API = {
@@ -75,44 +79,10 @@ def create_node():
     }
 
 
-def linear_forecast(values):
-    """
-    Extrapolate the next value using a linear trend.
-
-    values is a list of yearly values, including zeroes for missing years.
-    """
-    if not values:
-        return 0.0
-
-    if len(values) == 1:
-        return float(values[-1])
-
-    n = len(values)
-
-    mean_x = (n - 1) / 2
-    mean_y = sum(values) / n
-
-    denominator = sum(
-        (x - mean_x) ** 2
-        for x in range(n)
-    )
-
-    if denominator == 0:
-        return float(values[-1])
-
-    slope = sum(
-        (x - mean_x) * (y - mean_y)
-        for x, y in enumerate(values)
-    ) / denominator
-
-    intercept = mean_y - slope * mean_x
-
-    return intercept + slope * n
-
-
 class ChessOpeningApp:
-    def __init__(self, master):
+    def __init__(self, master, model):
         self.master = master
+        self.model = model
         self.master.title("Chess Opening Explorer")
         self.master.geometry("1450x850")
         self.master.minsize(1100, 700)
@@ -299,11 +269,11 @@ class ChessOpeningApp:
         self.tree.heading("expected_score", text="Expected %")
         self.tree.heading(
             "forecast_games",
-            text=f"Predicted {self.next_year or 'Next'} games",
+            text=f"Predicted games",
         )
         self.tree.heading(
             "forecast_points",
-            text=f"Predicted {self.next_year or 'Next'} points",
+            text=f"Predicted points",
         )
 
         self.tree.column("#0", width=100)
@@ -704,33 +674,27 @@ class ChessOpeningApp:
 
     def forecast_move(self, node):
         """
-        Forecast next year's game count and points independently.
+        Predict next year's game count and points using the trained Keras model.
         """
         series = self.get_time_series(node)
 
         if not series:
             return 0.0, 0.0
 
-        game_values = [
-            games for _, games, _ in series
+        # predict_next_year expects [(year, [games, points]), ...].
+        yearly_data = [
+            (year, [games, points])
+            for year, games, points in series
         ]
 
-        point_values = [
-            points for _, _, points in series
-        ]
-
-        predicted_games = linear_forecast(game_values)
-        predicted_points = linear_forecast(point_values)
-
-        # Forecasts cannot be negative.
-        predicted_games = max(0.0, predicted_games)
-        predicted_points = max(0.0, predicted_points)
-
-        # Points cannot exceed the predicted number of games.
-        predicted_points = min(
-            predicted_points,
-            predicted_games,
+        predicted_games, predicted_points = predict_next_year(
+            self.model,
+            yearly_data,
         )
+
+        predicted_games = max(0.0, float(predicted_games))
+        predicted_points = max(0.0, float(predicted_points))
+        predicted_points = min(predicted_points, predicted_games)
 
         return predicted_games, predicted_points
 
@@ -805,11 +769,11 @@ class ChessOpeningApp:
 
         self.tree.heading(
             "forecast_games",
-            text=f"Predicted {year_text} games",
+            text=f"Predicted games",
         )
         self.tree.heading(
             "forecast_points",
-            text=f"Predicted {year_text} points",
+            text=f"Predicted points",
         )
 
         self.details_var.set(
@@ -1036,8 +1000,25 @@ class ChessOpeningApp:
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Chess Opening Explorer"
+    )
+    parser.add_argument(
+        "--model",
+        required=True,
+        help="Path to the trained Keras model (.keras)",
+    )
+
+    args = parser.parse_args()
+
+    try:
+        model = keras.models.load_model(args.model)
+    except Exception as error:
+        print(f"Could not load model: {error}")
+        return
+
     root = tk.Tk()
-    ChessOpeningApp(root)
+    ChessOpeningApp(root, model)
     root.mainloop()
 
 
