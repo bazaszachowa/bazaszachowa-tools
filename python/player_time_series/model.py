@@ -54,50 +54,65 @@ def build_model() -> keras.Model:
     inputs = keras.Input(shape=(None, 2))
 
     x = layers.Masking(mask_value=PADDING_VALUE)(inputs)
-    x = layers.LSTM(64)(x)
+    x = layers.GRU(32, dropout=0.1)(x)
     x = layers.Dense(32, activation="relu")(x)
-
-    count = layers.Dense(1, activation="softplus")(x)
-    rate = layers.Dense(1, activation="sigmoid")(x)
+    x = layers.Dropout(0.2)(x)
+    count = layers.Dense(1, activation="softplus", name="count")(x)
+    rate = layers.Dense(1, activation="sigmoid", name="rate")(x)
 
     outputs = layers.Concatenate()([count, rate])
 
     model = keras.Model(inputs, outputs)
 
     model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=0.001),
+        optimizer=keras.optimizers.Adam(
+            learning_rate=0.0001,
+            clipnorm=1.0,
+        ),
         loss="mse",
         metrics=["mae"],
     )
 
     return model
 
-
 def make_samples(
     series: dict[tuple[int, str], list[tuple[int, list[float]]]],
     keys: list[tuple[int, str]],
     min_history: int = 1,
 ) -> Generator[tuple[np.ndarray, np.ndarray], None, None]:
-    """
-    Generates:
-        previous years -> next year's [count, points]
 
-    Samples are yielded one at a time to avoid storing all
-    encoded sequences in memory.
-    """
     for key in keys:
         yearly_data = series[key]
-        values = [value for _, value in yearly_data]
 
-        for target_index in range(min_history, len(values)):
-            history: np.ndarray = encode_yearly_data(
-                [(int(value[0]), float(value[1])) for value in values[:target_index]]
-            )
+        encoded = encode_yearly_data(
+            [
+                (int(value[0]), float(value[1]))
+                for _, value in yearly_data
+            ]
+        )
 
-            target: np.ndarray = encode_target(
-                int(values[target_index][0]),
-                float(values[target_index][1]),
-            )
+        for target_index in range(min_history, len(encoded)):
+            history = encoded[:target_index]
+            target = encoded[target_index]
+
+            if not np.all(np.isfinite(history)):
+                raise ValueError(f"Non-finite history for {key}")
+
+            if not np.all(np.isfinite(target)):
+                raise ValueError(f"Non-finite target for {key}")
+
+            if np.any(history[:, 0] < 0):
+                raise ValueError(f"Negative game count for {key}")
+
+            if np.any(history[:, 1] < 0) or np.any(history[:, 1] > 1):
+                raise ValueError(f"Invalid scoring rate in history for {key}")
+
+            if target[0] < 0:
+                raise ValueError(f"Negative target game count for {key}")
+
+            if target[1] < 0 or target[1] > 1:
+                raise ValueError(f"Invalid target scoring rate for {key}")
+
             yield history, target
 
 
@@ -123,6 +138,7 @@ def make_dataset(
             buffer_size=10000,
             reshuffle_each_iteration=True,
         )
+        dataset = dataset.repeat()
 
     dataset = dataset.padded_batch(
         batch_size,
@@ -137,8 +153,17 @@ def make_dataset(
         drop_remainder=False,
     )
 
-    return dataset.prefetch(tf.data.AUTOTUNE)
+    dataset = dataset.prefetch(tf.data.AUTOTUNE)
 
+    if shuffle:
+        dataset = dataset.apply(
+            tf.data.experimental.prefetch_to_device(
+                "/GPU:0",
+                buffer_size=2,
+            )
+        )
+
+    return dataset
 
 def count_samples(
     series: dict[tuple[int, str], list[tuple[int, list[float]]]],
@@ -206,20 +231,50 @@ def train_model(
         batch_size,
         shuffle=False,
     )
+    print("Train dataset cardinality:", train_dataset.cardinality().numpy())
+    print("Validation dataset cardinality:", validation_dataset.cardinality().numpy())
 
     model = build_model()
+
+    samples_per_epoch = int(train_count * 0.25)
+
+    steps_per_epoch = (
+        samples_per_epoch + batch_size - 1
+    ) // batch_size
 
     model.fit(
         train_dataset,
         validation_data=validation_dataset,
         epochs=epochs,
-        callbacks=[
+        shuffle=False,
+        steps_per_epoch=steps_per_epoch,
+        callbacks = [
+            keras.callbacks.TerminateOnNaN(),
+
+            keras.callbacks.ModelCheckpoint(
+                "best_model.keras",
+                monitor="val_loss",
+                save_best_only=True,
+                verbose=1,
+            ),
+
+            keras.callbacks.ReduceLROnPlateau(
+                monitor="val_loss",
+                factor=0.5,
+                patience=3,
+                min_delta=0.0001,
+                min_lr=1e-6,
+                verbose=1,
+            ),
+
             keras.callbacks.EarlyStopping(
                 monitor="val_loss",
-                patience=5,
+                patience=10,
+                min_delta=0.0001,
                 restore_best_weights=True,
-            )
-        ],
+                verbose=1,
+            ),
+        ]
     )
 
     return model
