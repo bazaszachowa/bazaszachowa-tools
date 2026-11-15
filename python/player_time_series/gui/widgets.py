@@ -52,6 +52,21 @@ def create_widgets(app: "ChessOpeningApp") -> None:
         value="black",
     ).pack(side=tk.LEFT)
 
+    ttk.Label(top, text="Model:").pack(side=tk.LEFT, padx=(12, 5))
+
+    app.mode_selector = ttk.Combobox(
+        top,
+        textvariable=app.mode_var,
+        values=tuple(app.models),
+        state="readonly",
+        width=12,
+    )
+    app.mode_selector.pack(side=tk.LEFT, padx=5)
+    app.mode_selector.bind(
+        "<<ComboboxSelected>>",
+        app.on_mode_changed,
+    )
+
     app.submit_button = ttk.Button(
         top,
         text="Search games",

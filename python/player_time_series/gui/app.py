@@ -19,9 +19,18 @@ from .widgets import create_widgets, draw_board
 
 
 class ChessOpeningApp:
-    def __init__(self, master: tk.Tk, model: keras.Model) -> None:
+    def __init__(
+        self,
+        master: tk.Tk,
+        models: dict[str, keras.Model],
+    ) -> None:
         self.master = master
-        self.model = model
+        self.models = models
+
+        self.mode_var = tk.StringVar(
+            value="absolute" if "absolute" in models else next(iter(models))
+        )
+
         self.master.title("Chess Opening Explorer")
         self.master.geometry("1450x850")
         self.master.minsize(1100, 700)
@@ -30,6 +39,7 @@ class ChessOpeningApp:
         self.submit_button: ttk.Button
         self.canvas: tk.Canvas
         self.tree: ttk.Treeview
+        self.mode_selector: ttk.Combobox
 
         self.api = ChessApiClient()
 
@@ -242,9 +252,13 @@ class ChessOpeningApp:
         # predict_next_year expects [(year, [games, points]), ...].
         yearly_data = [(year, [games, points]) for year, games, points in series]
 
+        mode = self.mode_var.get()
+        model = self.models[mode]
+
         predicted_games, predicted_points = predict_next_year(
-            self.model,
+            model,
             yearly_data,
+            mode=mode,
         )
 
         predicted_games = max(0.0, float(predicted_games))
@@ -472,25 +486,43 @@ class ChessOpeningApp:
 
         self.set_position(self.current_path + [uci])
 
+    def on_mode_changed(self, event: tk.Event | None = None) -> None:
+        self.populate_tree()
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Chess Opening Explorer")
     parser.add_argument(
-        "--model",
-        required=True,
-        help="Path to the trained Keras model (.keras)",
+        "--absolute-model",
+        help="Path to the absolute model (.keras)",
+    )
+    parser.add_argument(
+        "--percentage-model",
+        help="Path to the percentage model (.keras)",
     )
 
     args = parser.parse_args()
 
+    model_paths = {
+        "absolute": args.absolute_model,
+        "percentage": args.percentage_model,
+    }
+
+    models: dict[str, keras.Model] = {}
+
     try:
-        model = keras.models.load_model(args.model)
+        for mode, path in model_paths.items():
+            if path:
+                models[mode] = keras.models.load_model(path)
+
+        if not models:
+            parser.error("Provide at least one model path.")
     except Exception as error:
         print(f"Could not load model: {error}")
         return
 
     root = tk.Tk()
-    ChessOpeningApp(root, model)
+    ChessOpeningApp(root, models)
     root.mainloop()
 
 
