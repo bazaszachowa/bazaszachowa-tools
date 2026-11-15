@@ -2,7 +2,6 @@ import argparse
 import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
-from typing import Any
 
 import chess
 import keras
