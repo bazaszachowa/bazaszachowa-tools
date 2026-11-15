@@ -1,13 +1,16 @@
-from .dataset import load_player_series
-from .model import (
-    build_model,
-    predict_next_year,
-    train_model,
-)
+"""Player time-series training package."""
+
+from .dataset import PlayerSeries, Representation, load_player_series
+from .model import TimeSeriesTrainer, predict_next_year, train_model
+from .strategies import AbsoluteStrategy, PercentageStrategy
 
 __all__ = [
+    "AbsoluteStrategy",
+    "PercentageStrategy",
+    "PlayerSeries",
+    "Representation",
+    "TimeSeriesTrainer",
     "load_player_series",
-    "build_model",
-    "train_model",
     "predict_next_year",
+    "train_model",
 ]

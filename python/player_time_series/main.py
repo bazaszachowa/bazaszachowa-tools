@@ -1,80 +1,55 @@
+"""Train a player time-series model from a SQLite database."""
+
+from __future__ import annotations
+
 import argparse
 import sqlite3
 
-from .dataset import load_player_series
-from .model import predict_next_year, train_model
+from .dataset import Representation, load_player_series
+from .model import TimeSeriesTrainer
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--database", default="all_games.sqlite")
+    parser.add_argument(
+        "--mode",
+        choices=("absolute", "percentage"),
+        default="absolute",
+        help="absolute=[log games, scoring rate], percentage=[career game share, career point share]",
+    )
+    parser.add_argument("--min-history", type=int, default=2)
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--samples-fraction", type=float, default=0.25)
+    parser.add_argument("--output", default=None)
+    return parser.parse_args()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Train a chess player yearly time-series model."
-    )
-    parser.add_argument(
-        "--database",
-        default="all_games.sqlite",
-        help="SQLite database path",
-    )
-    parser.add_argument(
-        "--output",
-        default="player_time_series.keras",
-        help="Output Keras model path",
-    )
-    parser.add_argument(
-        "--min-history",
-        type=int,
-        default=1,
-        help="Minimum previous years required for a training sample",
-    )
-    parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--player-id", type=int)
-    parser.add_argument(
-        "--role",
-        choices=("white", "black"),
-        default="white",
-        help="Role used when predicting for --player-id",
-    )
-
-    args = parser.parse_args()
-
-    if args.min_history < 1:
-        parser.error("--min-history must be at least 1")
+    args = parse_args()
+    mode: Representation = args.mode
 
     with sqlite3.connect(args.database) as connection:
-        series = load_player_series(connection)
+        series = load_player_series(connection, representation=mode)
 
-    print(f"Loaded {len(series)} player-role time series")
+    print(f"Player-role series: {len(series)}")
 
-    if not series:
-        raise RuntimeError("No player data found in the database")
-
-    model = train_model(
+    trainer = TimeSeriesTrainer(
+        mode=mode,
+        batch_size=args.batch_size,
+        samples_fraction=args.samples_fraction,
+    )
+    model = trainer.fit(
         series,
         min_history=args.min_history,
         epochs=args.epochs,
-        batch_size=args.batch_size,
+        checkpoint_path=f"best_{mode}.keras",
     )
 
-    model.save(args.output)
-    print(f"Model saved to: {args.output}")
-
-    if args.player_id is not None:
-        key = (args.player_id, args.role)
-
-        if key not in series:
-            print(f"No {args.role} games found for player {args.player_id}")
-            return
-
-        history = series[key]
-        prediction = predict_next_year(model, history)
-
-        last_year = history[-1][0]
-
-        print(f"\nPlayer: {args.player_id}")
-        print(f"Role: {args.role}")
-        print(f"History: {history}")
-        print(f"Predicted year: {last_year + 1}")
-        print(f"Predicted [games, points]: [{prediction[0]:.2f}, {prediction[1]:.2f}]")
+    output = args.output or f"player_time_series_{mode}.keras"
+    model.save(output)
+    print(f"Saved model: {output}")
 
 
 if __name__ == "__main__":
