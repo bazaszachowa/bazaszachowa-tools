@@ -15,7 +15,7 @@ from .opening_types import (
     OpeningNode,
     create_node,
 )
-from .widgets import create_widgets, draw_board
+from .widgets import create_widgets, draw_board, update_columns_visibility
 
 
 class ChessOpeningApp:
@@ -242,18 +242,62 @@ class ChessOpeningApp:
 
     def forecast_move(self, node: OpeningNode) -> tuple[float, float]:
         """
-        Predict next year's game count and points using the trained Keras model.
-        """
-        series = get_time_series(node, self.first_year, self.latest_year)
+        Predict next year's statistics.
 
-        if not series:
+        Absolute mode:
+            [predicted game count, predicted points]
+
+        Percentage mode:
+            [position game share, position score percentage]
+
+        Percentage values are fractions in the [0, 1] range.
+        """
+        if self.first_year is None or self.latest_year is None:
             return 0.0, 0.0
 
-        # predict_next_year expects [(year, [games, points]), ...].
-        yearly_data = [(year, [games, points]) for year, games, points in series]
-
         mode = self.mode_var.get()
+
+        position_series = get_time_series(
+            node,
+            self.first_year,
+            self.latest_year,
+        )
+
+        if not position_series:
+            return 0.0, 0.0
+
         model = self.models[mode]
+
+        if mode == "absolute":
+            yearly_data = [
+                (year, [float(games), float(points)])
+                for year, games, points in position_series
+            ]
+
+        elif mode == "percentage":
+            total_series = get_time_series(
+                self.root_node,
+                self.first_year,
+                self.latest_year,
+            )
+
+            total_games_by_year = {year: games for year, games, _ in total_series}
+
+            yearly_data = []
+
+            for year, games, points in position_series:
+                total_games = total_games_by_year.get(year, 0)
+
+                game_share = (
+                    float(games) / float(total_games) if total_games > 0 else 0.0
+                )
+
+                point_score = float(points) / float(games) if games > 0 else 0.0
+
+                yearly_data.append((year, [game_share, point_score]))
+
+        else:
+            raise ValueError(f"Unknown prediction mode: {mode}")
 
         predicted_games, predicted_points = predict_next_year(
             model,
@@ -263,7 +307,12 @@ class ChessOpeningApp:
 
         predicted_games = max(0.0, float(predicted_games))
         predicted_points = max(0.0, float(predicted_points))
-        predicted_points = min(predicted_points, predicted_games)
+
+        if mode == "percentage":
+            predicted_games = min(predicted_games, 1.0) * 100
+            predicted_points = min(predicted_points, 1.0) * 100
+        else:
+            predicted_points = min(predicted_points, predicted_games)
 
         return predicted_games, predicted_points
 
@@ -301,14 +350,12 @@ class ChessOpeningApp:
 
             self.tree_moves[item_id] = child["uci"]
 
-        self.tree.heading(
-            "forecast_games",
-            text="Predicted games",
-        )
-        self.tree.heading(
-            "forecast_points",
-            text="Predicted points",
-        )
+        if self.mode_var.get() == "percentage":
+            self.tree.heading("forecast_games", text="Position games (%)")
+            self.tree.heading("forecast_points", text="Position score (%)")
+        else:
+            self.tree.heading("forecast_games", text="Predicted games")
+            self.tree.heading("forecast_points", text="Predicted points")
 
         self.details_var.set(
             "Select a possible next move to see its yearly time series."
@@ -346,14 +393,24 @@ class ChessOpeningApp:
         else:
             lines.append("No usable year information.")
 
-        lines.extend(
-            [
-                "",
-                f"Forecast for {self.next_year or 'next year'}:",
-                f"Games:  {predicted_games:.1f}",
-                f"Points: {predicted_points:.1f}",
-            ]
-        )
+        if self.mode_var.get() == "percentage":
+            lines.extend(
+                [
+                    "",
+                    f"Forecast for {self.next_year or 'next year'}:",
+                    f"Position game share: {predicted_games * 100:.1f}%",
+                    f"Position score: {predicted_points * 100:.1f}%",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "",
+                    f"Forecast for {self.next_year or 'next year'}:",
+                    f"Games:  {predicted_games:.1f}",
+                    f"Points: {predicted_points:.1f}",
+                ]
+            )
 
         if predicted_games > 0:
             expected_score = predicted_points / predicted_games * 100
@@ -487,6 +544,7 @@ class ChessOpeningApp:
         self.set_position(self.current_path + [uci])
 
     def on_mode_changed(self, event: tk.Event | None = None) -> None:
+        update_columns_visibility(self)
         self.populate_tree()
 
 

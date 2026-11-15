@@ -19,6 +19,13 @@ if TYPE_CHECKING:
     from .app import ChessOpeningApp
 
 
+def update_columns_visibility(app: "ChessOpeningApp") -> None:
+    if app.mode_var.get() == "absolute":
+        app.tree.column("expected_score", width=100, stretch=True)
+    else:
+        app.tree.column("expected_score", width=0, minwidth=0, stretch=False)
+
+
 def create_widgets(app: "ChessOpeningApp") -> None:
     top = ttk.Frame(app.master, padding=10)
     top.pack(fill=tk.X)
@@ -237,6 +244,7 @@ def create_widgets(app: "ChessOpeningApp") -> None:
         relief=tk.SUNKEN,
         anchor=tk.W,
     ).pack(fill=tk.X, side=tk.BOTTOM)
+    update_columns_visibility(app)
 
 
 def draw_board(app: "ChessOpeningApp") -> None:
