@@ -75,6 +75,7 @@ def build_model() -> keras.Model:
 
     return model
 
+
 def make_samples(
     series: dict[tuple[int, str], list[tuple[int, list[float]]]],
     keys: list[tuple[int, str]],
@@ -85,10 +86,7 @@ def make_samples(
         yearly_data = series[key]
 
         encoded = encode_yearly_data(
-            [
-                (int(value[0]), float(value[1]))
-                for _, value in yearly_data
-            ]
+            [(int(value[0]), float(value[1])) for _, value in yearly_data]
         )
 
         for target_index in range(min_history, len(encoded)):
@@ -165,6 +163,7 @@ def make_dataset(
 
     return dataset
 
+
 def count_samples(
     series: dict[tuple[int, str], list[tuple[int, list[float]]]],
     keys: list[tuple[int, str]],
@@ -238,9 +237,7 @@ def train_model(
 
     samples_per_epoch = int(train_count * 0.25)
 
-    steps_per_epoch = (
-        samples_per_epoch + batch_size - 1
-    ) // batch_size
+    steps_per_epoch = (samples_per_epoch + batch_size - 1) // batch_size
 
     model.fit(
         train_dataset,
@@ -248,16 +245,14 @@ def train_model(
         epochs=epochs,
         shuffle=False,
         steps_per_epoch=steps_per_epoch,
-        callbacks = [
+        callbacks=[
             keras.callbacks.TerminateOnNaN(),
-
             keras.callbacks.ModelCheckpoint(
                 "best_model.keras",
                 monitor="val_loss",
                 save_best_only=True,
                 verbose=1,
             ),
-
             keras.callbacks.ReduceLROnPlateau(
                 monitor="val_loss",
                 factor=0.5,
@@ -266,7 +261,6 @@ def train_model(
                 min_lr=1e-6,
                 verbose=1,
             ),
-
             keras.callbacks.EarlyStopping(
                 monitor="val_loss",
                 patience=10,
@@ -274,7 +268,7 @@ def train_model(
                 restore_best_weights=True,
                 verbose=1,
             ),
-        ]
+        ],
     )
 
     return model
