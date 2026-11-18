@@ -186,14 +186,14 @@ class TimeSeriesTrainer:
                 keras.callbacks.ReduceLROnPlateau(
                     monitor="val_loss",
                     factor=0.5,
-                    patience=3,
+                    patience=10,
                     min_delta=0.0001,
                     min_lr=1e-6,
                     verbose=1,
                 ),
                 keras.callbacks.EarlyStopping(
                     monitor="val_loss",
-                    patience=10,
+                    patience=30,
                     min_delta=0.0001,
                     restore_best_weights=False,
                     verbose=1,

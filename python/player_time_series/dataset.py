@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections import defaultdict
 from collections.abc import Sequence
+from datetime import date
 from typing import Literal
 
 type Representation = Literal["absolute", "percentage"]
@@ -165,11 +166,11 @@ def load_player_series(
 
         grouped[(int(player_id), str(role))][int(year)] = values
 
+    last_year = date.today().year
     result: PlayerSeries = {}
 
     for key, yearly_data in grouped.items():
         first_year = min(yearly_data)
-        last_year = max(yearly_data)
 
         for year in range(first_year, last_year + 1):
             yearly_data.setdefault(year, [0.0, 0.0])
