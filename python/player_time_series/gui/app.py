@@ -241,17 +241,7 @@ class ChessOpeningApp:
     # ---------------------------------------------------------
 
     def forecast_move(self, node: OpeningNode) -> tuple[float, float]:
-        """
-        Predict next year's statistics.
-
-        Absolute mode:
-            [predicted game count, predicted points]
-
-        Percentage mode:
-            [position game share, position score percentage]
-
-        Percentage values are fractions in the [0, 1] range.
-        """
+        """Predict next year's position share and score, or absolute statistics."""
         if self.first_year is None or self.latest_year is None:
             return 0.0, 0.0
 
@@ -283,38 +273,55 @@ class ChessOpeningApp:
 
             total_games_by_year = {year: games for year, games, _ in total_series}
 
+            position_by_year = {
+                year: (games, points) for year, games, points in position_series
+            }
+
             yearly_data = []
 
-            for year, games, points in position_series:
-                total_games = total_games_by_year.get(year, 0)
-
-                game_share = (
-                    float(games) / float(total_games) if total_games > 0 else 0.0
+            # Use every calendar year, including years without games.
+            for year, total_games in total_games_by_year.items():
+                games, points = position_by_year.get(
+                    year,
+                    (0, 0.0),
                 )
 
-                point_score = float(points) / float(games) if games > 0 else 0.0
+                game_share = games / total_games if total_games > 0 else 0.0
 
-                yearly_data.append((year, [game_share, point_score]))
+                point_score = points / games if games > 0 else 0.0
+
+                has_games = 1.0 if total_games > 0 else 0.0
+
+                yearly_data.append(
+                    (
+                        year,
+                        [
+                            float(game_share),
+                            float(point_score),
+                            has_games,
+                        ],
+                    )
+                )
 
         else:
             raise ValueError(f"Unknown prediction mode: {mode}")
 
-        predicted_games, predicted_points = predict_next_year(
+        predicted_first, predicted_second = predict_next_year(
             model,
             yearly_data,
             mode=mode,
         )
 
-        predicted_games = max(0.0, float(predicted_games))
-        predicted_points = max(0.0, float(predicted_points))
+        predicted_first = max(0.0, float(predicted_first))
+        predicted_second = max(0.0, float(predicted_second))
 
         if mode == "percentage":
-            predicted_games = min(predicted_games, 1.0) * 100
-            predicted_points = min(predicted_points, 1.0) * 100
+            predicted_first = min(predicted_first, 1.0) * 100.0
+            predicted_second = min(predicted_second, 1.0) * 100.0
         else:
-            predicted_points = min(predicted_points, predicted_games)
+            predicted_second = min(predicted_second, predicted_first)
 
-        return predicted_games, predicted_points
+        return predicted_first, predicted_second
 
     # ---------------------------------------------------------
     # Display only immediate next moves
@@ -398,8 +405,8 @@ class ChessOpeningApp:
                 [
                     "",
                     f"Forecast for {self.next_year or 'next year'}:",
-                    f"Position game share: {predicted_games * 100:.1f}%",
-                    f"Position score: {predicted_points * 100:.1f}%",
+                    f"Position game share: {predicted_games:.1f}%",
+                    f"Position score: {predicted_points:.1f}%",
                 ]
             )
         else:
@@ -412,7 +419,7 @@ class ChessOpeningApp:
                 ]
             )
 
-        if predicted_games > 0:
+        if self.mode_var.get() == "absolute" and predicted_games > 0:
             expected_score = predicted_points / predicted_games * 100
             lines.append(f"Expected score: {expected_score:.1f}%")
 

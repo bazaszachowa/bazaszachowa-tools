@@ -4,17 +4,13 @@ from __future__ import annotations
 
 import math
 import random
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
 
 import keras
 import numpy as np
-import tensorflow as tf
-from keras import layers
 
 from .dataset import PlayerSeries, SeriesKey, YearValue
 from .strategies import (
-    AbsoluteStrategy,
-    PercentageStrategy,
     PredictionStrategy,
     get_feature_strategy,
 )
@@ -24,20 +20,40 @@ type Sample = tuple[np.ndarray, np.ndarray]
 
 
 def build_model(strategy: PredictionStrategy) -> keras.Model:
-    """Build the same GRU body with output activations suited to the mode."""
-    inputs = keras.Input(shape=(None, 2))
-    x = layers.Masking(mask_value=PADDING_VALUE)(inputs)
-    x = layers.GRU(32, dropout=0.1)(x)
-    x = layers.Dense(32, activation="relu")(x)
-    x = layers.Dropout(0.2)(x)
+    inputs = keras.Input(
+        shape=(None, strategy.input_size),
+        name="history",
+    )
+
+    x = keras.layers.Masking(
+        mask_value=PADDING_VALUE,
+    )(inputs)
+
+    x = keras.layers.GRU(
+        32,
+        dropout=0.1,
+    )(x)
+
+    x = keras.layers.Dense(
+        32,
+        activation="relu",
+    )(x)
+
+    x = keras.layers.Dropout(0.2)(x)
+
     outputs = strategy.make_output(x)
 
     model = keras.Model(inputs, outputs)
+
     model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=0.0001, clipnorm=1.0),
+        optimizer=keras.optimizers.Adam(
+            learning_rate=1e-4,
+            clipnorm=1.0,
+        ),
         loss="mse",
         metrics=["mae"],
     )
+
     return model
 
 
@@ -48,56 +64,21 @@ def make_samples(
     strategy: PredictionStrategy,
 ) -> Generator[Sample, None, None]:
     for key in keys:
-        encoded = strategy.encode_series(series[key])
+        yearly_data = series[key]
+        encoded = strategy.encode_input_series(yearly_data)
+
         for target_index in range(min_history, len(encoded)):
             history = encoded[:target_index]
-            target = encoded[target_index]
+            target = strategy.encode_target(yearly_data[target_index][1])
 
             if not np.all(np.isfinite(history)) or not np.all(np.isfinite(target)):
                 raise ValueError(f"Non-finite feature values for {key}")
-            if np.any(history < 0.0) or np.any(target < 0.0):
-                raise ValueError(f"Negative encoded feature values for {key}")
-            if isinstance(strategy, PercentageStrategy) and (
-                np.any(history > 1.0) or np.any(target > 1.0)
-            ):
-                raise ValueError(f"Percentage outside [0, 1] for {key}")
 
             yield history, target
 
 
 def count_samples(series: PlayerSeries, keys: list[SeriesKey], min_history: int) -> int:
     return sum(max(0, len(series[key]) - min_history) for key in keys)
-
-
-def make_dataset(
-    series: PlayerSeries,
-    keys: list[SeriesKey],
-    min_history: int,
-    batch_size: int,
-    shuffle: bool,
-    strategy: PredictionStrategy,
-) -> tf.data.Dataset:
-    dataset = tf.data.Dataset.from_generator(
-        lambda: make_samples(series, keys, min_history, strategy),
-        output_signature=(
-            tf.TensorSpec(shape=(None, 2), dtype=tf.float32),
-            tf.TensorSpec(shape=(2,), dtype=tf.float32),
-        ),
-    )
-
-    if shuffle:
-        dataset = dataset.shuffle(10000, reshuffle_each_iteration=True).repeat()
-
-    dataset = dataset.padded_batch(
-        batch_size,
-        padded_shapes=([None, 2], [2]),
-        padding_values=(
-            tf.constant(PADDING_VALUE, dtype=tf.float32),
-            tf.constant(0.0, dtype=tf.float32),
-        ),
-        drop_remainder=False,
-    )
-    return dataset.prefetch(tf.data.AUTOTUNE)
 
 
 class TimeSeriesTrainer:
@@ -118,9 +99,7 @@ class TimeSeriesTrainer:
         if not 0.0 < samples_fraction <= 1.0:
             raise ValueError("samples_fraction must be in (0, 1]")
 
-        self.strategy = (
-            PercentageStrategy() if mode == "percentage" else AbsoluteStrategy()
-        )
+        self.strategy = get_feature_strategy(mode)
         self.batch_size = batch_size
         self.validation_fraction = validation_fraction
         self.seed = seed
@@ -161,11 +140,36 @@ class TimeSeriesTrainer:
         print(f"Training samples: {train_count}")
         print(f"Validation samples: {validation_count}")
 
-        train_dataset = make_dataset(
-            series, train_keys, min_history, self.batch_size, True, self.strategy
+        def train_factory() -> Iterator[Sample]:
+            return make_samples(
+                series,
+                train_keys,
+                min_history,
+                self.strategy,
+            )
+
+        def validation_factory() -> Iterator[Sample]:
+            return make_samples(
+                series,
+                validation_keys,
+                min_history,
+                self.strategy,
+            )
+
+        train_dataset = self.strategy.make_dataset(
+            train_factory,
+            train_count,
+            self.batch_size,
+            shuffle=True,
+            padding_value=PADDING_VALUE,
         )
-        validation_dataset = make_dataset(
-            series, validation_keys, min_history, self.batch_size, False, self.strategy
+
+        validation_dataset = self.strategy.make_dataset(
+            validation_factory,
+            validation_count,
+            self.batch_size,
+            shuffle=False,
+            padding_value=PADDING_VALUE,
         )
 
         samples_per_epoch = max(1, int(train_count * self.samples_fraction))
