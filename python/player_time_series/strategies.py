@@ -108,7 +108,7 @@ class PredictionStrategy(ABC):
 
 
 class AbsoluteStrategy(PredictionStrategy):
-    """Input: [log1p(games), score_rate].
+    """Input: [log1p(games), score_rate, has_games].
 
     Output: [log1p(games), score_rate].
     """
@@ -117,23 +117,33 @@ class AbsoluteStrategy(PredictionStrategy):
 
     @property
     def input_size(self) -> int:
-        return 2
+        return 3
 
     def encode_input(self, values: list[float]) -> np.ndarray:
+        if len(values) != 2:
+            raise ValueError("Absolute input must contain two values")
+
         count, points = values
 
-        if count < 0.0 or points < 0.0 or points > count:
+        if (
+            not np.isfinite(count)
+            or not np.isfinite(points)
+            or count < 0.0
+            or points < 0.0
+            or points > count
+        ):
             raise ValueError("Invalid absolute values")
 
         rate = points / count if count > 0.0 else 0.0
+        has_games = 1.0 if count > 0.0 else 0.0
 
         return np.asarray(
-            [np.log1p(count), rate],
+            [np.log1p(count), rate, has_games],
             dtype=np.float32,
         )
 
     def encode_target(self, values: list[float]) -> np.ndarray:
-        return self.encode_input(values)
+        return self.encode_input(values)[:2]
 
     def decode(self, prediction: np.ndarray) -> list[float]:
         count = max(
