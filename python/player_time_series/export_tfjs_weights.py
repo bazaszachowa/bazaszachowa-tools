@@ -1,15 +1,14 @@
-
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import keras
 import numpy as np
 
 
-def to_list(values: np.ndarray) -> list[Any]:
-    return values.astype(np.float32).tolist()
+def to_list(values: np.ndarray) -> list[float]:
+    return cast(list[float], values.astype(np.float32).tolist())
 
 
 def export_model(model_path: Path, output_path: Path) -> None:
@@ -74,9 +73,7 @@ def export_model(model_path: Path, output_path: Path) -> None:
 
 def main() -> None:
     if len(sys.argv) != 3:
-        raise SystemExit(
-            "Użycie: export_tfjs_weights.py MODEL.keras OUTPUT.json"
-        )
+        raise SystemExit("Użycie: export_tfjs_weights.py MODEL.keras OUTPUT.json")
 
     export_model(Path(sys.argv[1]), Path(sys.argv[2]))
 
