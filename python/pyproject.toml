@@ -27,8 +27,8 @@ analysis = [
     "matplotlib",
     "numpy",
     "keras",
-    "tensorflow",
     "tensorflow[and-cuda]>=2.21.0",
+    "tensorflowjs>=3.18.0",
 ]
 
 [tool.ruff]
