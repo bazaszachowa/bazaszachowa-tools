@@ -33,5 +33,6 @@ jobs:
             -Dsonar.projectKey=KulAndy_bazaszachowa-tools
             -Dsonar.organization=kulandy
             -Dsonar.sources=cpp/src,python
-            -Dsonar.exclusions=**/cpp/chess-library/**,**/cpp/concurrentqueue/**,**/python/chess_scrappers/**
+            -Dsonar.exclusions=cpp/chess-library/**,cpp/concurrentqueue/**,cpp/build/**,python/chess_scrappers/**
+            -Dsonar.cpd.exclusions=cpp/chess-library/**,cpp/concurrentqueue/**,cpp/build/**,python/chess_scrappers/**
           projectBaseDir: .
