@@ -13,9 +13,6 @@ permissions:
   contents: read
   pull-requests: read
 
-permissions:
-  contents: read
-
 jobs:
   Analysis:
     runs-on: ubuntu-latest
